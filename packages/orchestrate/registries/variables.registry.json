@@ -1,0 +1,10 @@
+{
+  "version": "1.0.0",
+  "scopes": ["global", "run", "session", "orchestrator_iteration", "worker_task", "worker_iteration"],
+  "variables": [
+    { "name": "run.id", "scope": "run", "type": "string" },
+    { "name": "run.status", "scope": "run", "type": "string" },
+    { "name": "session.id", "scope": "session", "type": "string" },
+    { "name": "evidence.required_types", "scope": "worker_task", "type": "array<string>" }
+  ]
+}

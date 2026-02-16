@@ -22,6 +22,10 @@ import {
 } from './lib/terminal-input-ws-protocol.js';
 import { createOpencodeServer } from '@opencode-ai/sdk/server';
 import webPush from 'web-push';
+import {
+  normalizeOrchestrateBaseUrl,
+  normalizeOrchestrateEventFrame,
+} from './lib/orchestrate-sse.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -36,6 +40,7 @@ const MODELS_METADATA_CACHE_TTL = 5 * 60 * 1000;
 const CLIENT_RELOAD_DELAY_MS = 800;
 const OPEN_CODE_READY_GRACE_MS = 12000;
 const LONG_REQUEST_TIMEOUT_MS = 4 * 60 * 1000;
+const ORCHESTRATE_CONNECT_TIMEOUT_MS = 10000;
 const fsPromises = fs.promises;
 const DEFAULT_FILE_SEARCH_LIMIT = 60;
 const MAX_FILE_SEARCH_LIMIT = 400;
@@ -1593,6 +1598,15 @@ const sanitizeSettingsUpdate = (payload) => {
     result.skillCatalogs = skillCatalogs;
   }
 
+  if (typeof candidate.orchestrateBaseUrl === 'string') {
+    const trimmed = candidate.orchestrateBaseUrl.trim();
+    result.orchestrateBaseUrl = trimmed.length > 0 ? trimmed : undefined;
+  }
+  if (typeof candidate.orchestrateToken === 'string') {
+    const trimmed = candidate.orchestrateToken.trim();
+    result.orchestrateToken = trimmed.length > 0 ? trimmed : undefined;
+  }
+
   // Usage model selections - which models appear in dropdown
   if (candidate.usageSelectedModels && typeof candidate.usageSelectedModels === 'object') {
     const sanitized = {};
@@ -1766,6 +1780,7 @@ const formatSettingsResponse = (settings) => {
   const sanitized = sanitizeSettingsUpdate(settings);
   const approved = normalizeStringArray(settings.approvedDirectories);
   const bookmarks = normalizeStringArray(settings.securityScopedBookmarks);
+  const orchestrateToken = typeof settings.orchestrateToken === 'string' ? settings.orchestrateToken.trim() : '';
 
   return {
     ...sanitized,
@@ -1778,7 +1793,13 @@ const formatSettingsResponse = (settings) => {
         ? settings.showReasoningTraces
         : typeof sanitized.showReasoningTraces === 'boolean'
           ? sanitized.showReasoningTraces
-          : false
+          : false,
+    orchestrateBaseUrl:
+      typeof settings.orchestrateBaseUrl === 'string' && settings.orchestrateBaseUrl.trim().length > 0
+        ? settings.orchestrateBaseUrl.trim()
+        : undefined,
+    // Security: never return the token to the browser.
+    orchestrateTokenPresent: orchestrateToken.length > 0,
   };
 };
 
@@ -3684,6 +3705,133 @@ function parseSseDataPayload(block) {
   } catch {
     return null;
   }
+}
+
+async function getOrchestrateConnectionSettings() {
+  const settings = await readSettingsFromDiskMigrated();
+  const baseUrl = normalizeOrchestrateBaseUrl(settings?.orchestrateBaseUrl);
+  const token = typeof settings?.orchestrateToken === 'string' ? settings.orchestrateToken.trim() : '';
+  return {
+    baseUrl,
+    token: token.length > 0 ? token : null,
+  };
+}
+
+function buildOrchestrateUrl(baseUrl, routePath) {
+  const normalizedPath = routePath.startsWith('/') ? routePath : `/${routePath}`;
+  return new URL(normalizedPath, `${baseUrl}/`);
+}
+
+function buildOrchestrateHeaders(token, req, includeSseDefaults = false) {
+  const headers = {
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+
+  if (includeSseDefaults) {
+    headers.Accept = 'text/event-stream';
+    headers['Cache-Control'] = 'no-cache';
+    headers.Connection = 'keep-alive';
+  } else {
+    headers.Accept = 'application/json';
+  }
+
+  if (req && typeof req.header === 'function') {
+    const incomingLastEventId = req.header('Last-Event-ID');
+    if (typeof incomingLastEventId === 'string' && incomingLastEventId.trim().length > 0) {
+      headers['Last-Event-ID'] = incomingLastEventId.trim();
+    }
+  }
+
+  return headers;
+}
+
+async function enrichOrchestrateRunCreateBody(body) {
+  if (!body || typeof body !== 'object') {
+    return body;
+  }
+
+  const git = body.git;
+  if (!git || typeof git !== 'object' || git.enabled !== true) {
+    return body;
+  }
+
+  const repoPath = typeof git.repoPath === 'string' ? git.repoPath.trim() : '';
+  if (!repoPath) {
+    return body;
+  }
+
+  const existingIdentity = git.identity;
+  if (existingIdentity && typeof existingIdentity === 'object') {
+    const userName = typeof existingIdentity.userName === 'string' ? existingIdentity.userName.trim() : '';
+    const userEmail = typeof existingIdentity.userEmail === 'string' ? existingIdentity.userEmail.trim() : '';
+    const sshCommand = typeof existingIdentity.sshCommand === 'string' ? existingIdentity.sshCommand.trim() : '';
+    if (userName || userEmail || sshCommand) {
+      return body;
+    }
+  }
+
+  try {
+    const settings = await readSettingsFromDiskMigrated();
+    const preferredId = typeof settings?.defaultGitIdentityId === 'string' ? settings.defaultGitIdentityId.trim() : '';
+
+    let resolved = null;
+
+    if (preferredId === 'global') {
+      const gitService = await import('./lib/git-service.js');
+      resolved = await gitService.getGlobalIdentity();
+    } else if (preferredId) {
+      const storage = await import('./lib/git-identity-storage.js');
+      const profile = storage.getProfile(preferredId);
+      if (profile) {
+        resolved = {
+          userName: profile.userName || null,
+          userEmail: profile.userEmail || null,
+          sshCommand: profile.sshKey ? buildSshCommandSafe(profile.sshKey) : null,
+        };
+      }
+    }
+
+    if (!resolved) {
+      const gitService = await import('./lib/git-service.js');
+      resolved = await gitService.getCurrentIdentity(repoPath);
+    }
+
+    if (!resolved) {
+      return body;
+    }
+
+    return {
+      ...body,
+      git: {
+        ...git,
+        identity: {
+          userName: resolved.userName || null,
+          userEmail: resolved.userEmail || null,
+          sshCommand: resolved.sshCommand || null,
+        },
+      },
+    };
+  } catch {
+    return body;
+  }
+}
+
+function buildSshCommandSafe(sshKeyPath) {
+  if (typeof sshKeyPath !== 'string') {
+    return null;
+  }
+  const normalized = sshKeyPath.trim();
+  if (!normalized) {
+    return null;
+  }
+  // Very conservative validation (avoid injection).
+  const dangerousChars = /[`$!"';&|<>(){}[\]*?#~]/;
+  if (dangerousChars.test(normalized)) {
+    return null;
+  }
+  // Quote for shell safety.
+  const escaped = `'${normalized.replace(/'/g, "'\\''")}'`;
+  return `ssh -i ${escaped} -o IdentitiesOnly=yes`;
 }
 
 function emitDesktopNotification(payload) {
@@ -6311,6 +6459,529 @@ async function main(options = {}) {
       console.error(`[API:PUT /api/config/settings] Failed to save settings:`, error);
       console.error(`[API:PUT /api/config/settings] Error stack:`, error.stack);
       res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to save settings' });
+    }
+  });
+
+  // Orchestrate proxy routes (server-side, hides base URL + token from browser)
+  // Required endpoints:
+  // - POST   /api/orchestrate/runs
+  // - GET    /api/orchestrate/runs/:id
+  // - POST   /api/orchestrate/runs/:id/cancel
+  // - GET    /api/orchestrate/runs/:id/events  (SSE proxy w/ Last-Event-ID replay)
+  // Plus:    /api/orchestrate/health (connection test)
+
+  const sendOrchestrateNotConfigured = (res) => {
+    return res.status(400).json({
+      error: {
+        code: 'orchestrate_not_configured',
+        message: 'Orchestrate is not configured. Set base URL (and token if needed) in Settings.'
+      }
+    });
+  };
+
+  const fetchOrchestrateJson = async (url, options = {}) => {
+    const controller = new AbortController();
+    const { timeoutMs: rawTimeoutMs, ...fetchOptions } = options;
+    const timeoutMs = Number.isFinite(rawTimeoutMs) ? rawTimeoutMs : ORCHESTRATE_CONNECT_TIMEOUT_MS;
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, {
+        ...fetchOptions,
+        signal: controller.signal,
+      });
+      const text = await response.text().catch(() => '');
+      const json = text ? (() => {
+        try {
+          return JSON.parse(text);
+        } catch {
+          return null;
+        }
+      })() : null;
+      return { response, text, json };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  };
+
+  app.get('/api/orchestrate/health', async (req, res) => {
+    try {
+      const { baseUrl, token } = await getOrchestrateConnectionSettings();
+      if (!baseUrl) {
+        return sendOrchestrateNotConfigured(res);
+      }
+      const url = buildOrchestrateUrl(baseUrl, '/health');
+      const { response, json } = await fetchOrchestrateJson(url, {
+        method: 'GET',
+        headers: buildOrchestrateHeaders(token, req),
+        timeoutMs: ORCHESTRATE_CONNECT_TIMEOUT_MS,
+      });
+      if (!response.ok) {
+        return res.status(response.status).json(json ?? { error: { code: 'orchestrate_error', message: response.statusText } });
+      }
+      return res.status(200).json(json ?? { ok: true });
+    } catch (error) {
+      console.warn('[orchestrate] health proxy failed:', error);
+      return res.status(502).json({
+        error: {
+          code: 'orchestrate_unreachable',
+          message: error instanceof Error ? error.message : 'Failed to reach Orchestrate'
+        }
+      });
+    }
+  });
+
+  app.post('/api/orchestrate/runs', async (req, res) => {
+    try {
+      const { baseUrl, token } = await getOrchestrateConnectionSettings();
+      if (!baseUrl) {
+        return sendOrchestrateNotConfigured(res);
+      }
+
+      const body = await enrichOrchestrateRunCreateBody(req.body ?? {});
+      const url = buildOrchestrateUrl(baseUrl, '/runs');
+      const { response, json, text } = await fetchOrchestrateJson(url, {
+        method: 'POST',
+        headers: {
+          ...buildOrchestrateHeaders(token, req),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        timeoutMs: LONG_REQUEST_TIMEOUT_MS,
+      });
+      if (!response.ok) {
+        return res.status(response.status).json(json ?? { error: { code: 'orchestrate_error', message: text || response.statusText } });
+      }
+      return res.status(response.status).json(json ?? {});
+    } catch (error) {
+      console.warn('[orchestrate] create run proxy failed:', error);
+      return res.status(502).json({
+        error: {
+          code: 'orchestrate_unreachable',
+          message: error instanceof Error ? error.message : 'Failed to reach Orchestrate'
+        }
+      });
+    }
+  });
+
+  app.post('/api/orchestrate/spec', async (req, res) => {
+    try {
+      const { baseUrl, token } = await getOrchestrateConnectionSettings();
+      if (!baseUrl) {
+        return sendOrchestrateNotConfigured(res);
+      }
+
+      const url = buildOrchestrateUrl(baseUrl, '/spec');
+      const { response, json, text } = await fetchOrchestrateJson(url, {
+        method: 'POST',
+        headers: {
+          ...buildOrchestrateHeaders(token, req),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(req.body ?? {}),
+        timeoutMs: LONG_REQUEST_TIMEOUT_MS,
+      });
+      if (!response.ok) {
+        return res.status(response.status).json(json ?? { error: { code: 'orchestrate_error', message: text || response.statusText } });
+      }
+      return res.status(response.status).json(json ?? {});
+    } catch (error) {
+      console.warn('[orchestrate] spec proxy failed:', error);
+      return res.status(502).json({
+        error: {
+          code: 'orchestrate_unreachable',
+          message: error instanceof Error ? error.message : 'Failed to reach Orchestrate'
+        }
+      });
+    }
+  });
+
+  app.get('/api/orchestrate/runs/:id', async (req, res) => {
+    try {
+      const { baseUrl, token } = await getOrchestrateConnectionSettings();
+      if (!baseUrl) {
+        return sendOrchestrateNotConfigured(res);
+      }
+      const runId = String(req.params.id);
+      const url = buildOrchestrateUrl(baseUrl, `/runs/${encodeURIComponent(runId)}`);
+      const { response, json, text } = await fetchOrchestrateJson(url, {
+        method: 'GET',
+        headers: buildOrchestrateHeaders(token, req),
+        timeoutMs: ORCHESTRATE_CONNECT_TIMEOUT_MS,
+      });
+      if (!response.ok) {
+        return res.status(response.status).json(json ?? { error: { code: 'orchestrate_error', message: text || response.statusText } });
+      }
+      return res.status(200).json(json ?? {});
+    } catch (error) {
+      console.warn('[orchestrate] get run proxy failed:', error);
+      return res.status(502).json({
+        error: {
+          code: 'orchestrate_unreachable',
+          message: error instanceof Error ? error.message : 'Failed to reach Orchestrate'
+        }
+      });
+    }
+  });
+
+  app.get('/api/orchestrate/runs/:id/preview', async (req, res) => {
+    try {
+      const { baseUrl, token } = await getOrchestrateConnectionSettings();
+      if (!baseUrl) {
+        return sendOrchestrateNotConfigured(res);
+      }
+      const runId = String(req.params.id);
+      const url = buildOrchestrateUrl(baseUrl, `/runs/${encodeURIComponent(runId)}/preview`);
+      const { response, json, text } = await fetchOrchestrateJson(url, {
+        method: 'GET',
+        headers: buildOrchestrateHeaders(token, req),
+        timeoutMs: ORCHESTRATE_CONNECT_TIMEOUT_MS,
+      });
+      if (!response.ok) {
+        return res.status(response.status).json(json ?? { error: { code: 'orchestrate_error', message: text || response.statusText } });
+      }
+      return res.status(200).json(json ?? {});
+    } catch (error) {
+      console.warn('[orchestrate] preview status proxy failed:', error);
+      return res.status(502).json({
+        error: {
+          code: 'orchestrate_unreachable',
+          message: error instanceof Error ? error.message : 'Failed to reach Orchestrate'
+        }
+      });
+    }
+  });
+
+  app.post('/api/orchestrate/runs/:id/preview/start', async (req, res) => {
+    try {
+      const { baseUrl, token } = await getOrchestrateConnectionSettings();
+      if (!baseUrl) {
+        return sendOrchestrateNotConfigured(res);
+      }
+      const runId = String(req.params.id);
+      const url = buildOrchestrateUrl(baseUrl, `/runs/${encodeURIComponent(runId)}/preview/start`);
+      const { response, json, text } = await fetchOrchestrateJson(url, {
+        method: 'POST',
+        headers: buildOrchestrateHeaders(token, req),
+        timeoutMs: LONG_REQUEST_TIMEOUT_MS,
+      });
+      if (!response.ok) {
+        return res.status(response.status).json(json ?? { error: { code: 'orchestrate_error', message: text || response.statusText } });
+      }
+      return res.status(response.status).json(json ?? {});
+    } catch (error) {
+      console.warn('[orchestrate] preview start proxy failed:', error);
+      return res.status(502).json({
+        error: {
+          code: 'orchestrate_unreachable',
+          message: error instanceof Error ? error.message : 'Failed to reach Orchestrate'
+        }
+      });
+    }
+  });
+
+  app.post('/api/orchestrate/runs/:id/preview/stop', async (req, res) => {
+    try {
+      const { baseUrl, token } = await getOrchestrateConnectionSettings();
+      if (!baseUrl) {
+        return sendOrchestrateNotConfigured(res);
+      }
+      const runId = String(req.params.id);
+      const url = buildOrchestrateUrl(baseUrl, `/runs/${encodeURIComponent(runId)}/preview/stop`);
+      const { response, json, text } = await fetchOrchestrateJson(url, {
+        method: 'POST',
+        headers: buildOrchestrateHeaders(token, req),
+        timeoutMs: LONG_REQUEST_TIMEOUT_MS,
+      });
+      if (!response.ok) {
+        return res.status(response.status).json(json ?? { error: { code: 'orchestrate_error', message: text || response.statusText } });
+      }
+      return res.status(response.status).json(json ?? {});
+    } catch (error) {
+      console.warn('[orchestrate] preview stop proxy failed:', error);
+      return res.status(502).json({
+        error: {
+          code: 'orchestrate_unreachable',
+          message: error instanceof Error ? error.message : 'Failed to reach Orchestrate'
+        }
+      });
+    }
+  });
+
+  // Reverse proxy the preview content via OpenChamber (stable iframe target).
+  app.all('/api/orchestrate/runs/:id/preview/', async (req, res) => {
+    try {
+      const { baseUrl, token } = await getOrchestrateConnectionSettings();
+      if (!baseUrl) {
+        return sendOrchestrateNotConfigured(res);
+      }
+      const runId = String(req.params.id);
+      const upstreamUrl = buildOrchestrateUrl(baseUrl, `/runs/${encodeURIComponent(runId)}/preview/`);
+
+      const headers = buildOrchestrateHeaders(token, req);
+      delete headers.Accept;
+
+      const upstream = await fetch(upstreamUrl, {
+        method: 'GET',
+        headers,
+        redirect: 'manual',
+      });
+
+      res.status(upstream.status);
+      upstream.headers.forEach((value, key) => {
+        const lower = key.toLowerCase();
+        if (lower === 'connection' || lower === 'transfer-encoding') {
+          return;
+        }
+        res.setHeader(key, value);
+      });
+
+      if (!upstream.body) {
+        res.end();
+        return;
+      }
+
+      const { Readable } = await import('node:stream');
+      Readable.fromWeb(upstream.body).pipe(res);
+    } catch (error) {
+      console.warn('[orchestrate] preview reverse proxy (root) failed:', error);
+      try {
+        res.status(502).json({
+          error: {
+            code: 'orchestrate_unreachable',
+            message: error instanceof Error ? error.message : 'Failed to reach Orchestrate'
+          }
+        });
+      } catch {
+        // ignore
+      }
+    }
+  });
+
+  app.all('/api/orchestrate/runs/:id/preview/*rest', async (req, res) => {
+    try {
+      const { baseUrl, token } = await getOrchestrateConnectionSettings();
+      if (!baseUrl) {
+        return sendOrchestrateNotConfigured(res);
+      }
+      const runId = String(req.params.id);
+      const rest = typeof req.params.rest === 'string' ? req.params.rest : '';
+      const upstreamPath = `/runs/${encodeURIComponent(runId)}/preview/${rest}`;
+      const upstreamUrl = buildOrchestrateUrl(baseUrl, upstreamPath);
+
+      const headers = buildOrchestrateHeaders(token, req);
+      // Accept HTML/JS/CSS etc.
+      delete headers.Accept;
+
+      const method = String(req.method || 'GET').toUpperCase();
+      const hasBody = method !== 'GET' && method !== 'HEAD';
+
+      const upstream = await fetch(upstreamUrl, {
+        method,
+        headers,
+        body: hasBody ? req : undefined,
+        redirect: 'manual',
+      });
+
+      res.status(upstream.status);
+      upstream.headers.forEach((value, key) => {
+        const lower = key.toLowerCase();
+        if (lower === 'connection' || lower === 'transfer-encoding') {
+          return;
+        }
+        res.setHeader(key, value);
+      });
+
+      if (!upstream.body) {
+        res.end();
+        return;
+      }
+
+      const { Readable } = await import('node:stream');
+      Readable.fromWeb(upstream.body).pipe(res);
+    } catch (error) {
+      console.warn('[orchestrate] preview reverse proxy failed:', error);
+      try {
+        res.status(502).json({
+          error: {
+            code: 'orchestrate_unreachable',
+            message: error instanceof Error ? error.message : 'Failed to reach Orchestrate'
+          }
+        });
+      } catch {
+        // ignore
+      }
+    }
+  });
+
+  app.post('/api/orchestrate/runs/:id/cancel', async (req, res) => {
+    try {
+      const { baseUrl, token } = await getOrchestrateConnectionSettings();
+      if (!baseUrl) {
+        return sendOrchestrateNotConfigured(res);
+      }
+      const runId = String(req.params.id);
+      const url = buildOrchestrateUrl(baseUrl, `/runs/${encodeURIComponent(runId)}/cancel`);
+      const { response, json, text } = await fetchOrchestrateJson(url, {
+        method: 'POST',
+        headers: buildOrchestrateHeaders(token, req),
+        timeoutMs: ORCHESTRATE_CONNECT_TIMEOUT_MS,
+      });
+      if (!response.ok) {
+        return res.status(response.status).json(json ?? { error: { code: 'orchestrate_error', message: text || response.statusText } });
+      }
+      return res.status(response.status).json(json ?? {});
+    } catch (error) {
+      console.warn('[orchestrate] cancel run proxy failed:', error);
+      return res.status(502).json({
+        error: {
+          code: 'orchestrate_unreachable',
+          message: error instanceof Error ? error.message : 'Failed to reach Orchestrate'
+        }
+      });
+    }
+  });
+
+  app.get('/api/orchestrate/runs/:id/events', async (req, res) => {
+    const runId = String(req.params.id);
+
+    let upstreamResponse = null;
+    let controller = null;
+    let heartbeatInterval = null;
+
+    try {
+      const { baseUrl, token } = await getOrchestrateConnectionSettings();
+      if (!baseUrl) {
+        return sendOrchestrateNotConfigured(res);
+      }
+
+      const url = buildOrchestrateUrl(baseUrl, `/runs/${encodeURIComponent(runId)}/events`);
+
+      controller = new AbortController();
+      // Connect timeout only (do not time out active SSE streams).
+      const timeoutId = setTimeout(() => controller.abort(), ORCHESTRATE_CONNECT_TIMEOUT_MS);
+
+      upstreamResponse = await fetch(url, {
+        method: 'GET',
+        headers: buildOrchestrateHeaders(token, req, true),
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timeoutId));
+
+      if (!upstreamResponse.ok || !upstreamResponse.body) {
+        const text = await upstreamResponse.text().catch(() => '');
+        let json = null;
+        try {
+          json = text ? JSON.parse(text) : null;
+        } catch {
+          json = null;
+        }
+        return res.status(upstreamResponse.status).json(json ?? { error: { code: 'orchestrate_error', message: text || upstreamResponse.statusText } });
+      }
+
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+      });
+
+      const cleanup = () => {
+        try {
+          controller?.abort();
+        } catch {
+          // ignore
+        }
+        if (heartbeatInterval) {
+          clearInterval(heartbeatInterval);
+          heartbeatInterval = null;
+        }
+      };
+
+      req.on('close', () => {
+        cleanup();
+        try {
+          res.end();
+        } catch {
+          // ignore
+        }
+      });
+
+      // Proxy heartbeat (helps some proxies keep the connection open)
+      heartbeatInterval = setInterval(() => {
+        try {
+          res.write(': ping\n\n');
+        } catch {
+          // ignore
+        }
+      }, 15000);
+
+      const reader = upstreamResponse.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let fallbackEventId = 0;
+
+      const forwardEvent = (block) => {
+        if (!block) return;
+        fallbackEventId += 1;
+        const normalized = normalizeOrchestrateEventFrame(block, runId, fallbackEventId);
+        if (!normalized || !normalized.id) {
+          return;
+        }
+
+        // Normalize to a single event envelope; tolerate unknown types.
+        try {
+          res.write(`id: ${normalized.id}\n`);
+          res.write(`data: ${JSON.stringify(normalized)}\n\n`);
+        } catch {
+          // ignore
+        }
+      };
+
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+
+          let separatorIndex = buffer.indexOf('\n\n');
+          while (separatorIndex !== -1) {
+            const block = buffer.slice(0, separatorIndex);
+            buffer = buffer.slice(separatorIndex + 2);
+            forwardEvent(block);
+            separatorIndex = buffer.indexOf('\n\n');
+          }
+        }
+
+        if (buffer.trim().length > 0) {
+          forwardEvent(buffer.trim());
+        }
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          console.warn('[orchestrate] SSE proxy stream error:', error);
+        }
+      } finally {
+        cleanup();
+        try {
+          res.end();
+        } catch {
+          // ignore
+        }
+      }
+    } catch (error) {
+      console.warn('[orchestrate] events proxy failed:', error);
+      try {
+        res.status(502).json({
+          error: {
+            code: 'orchestrate_unreachable',
+            message: error instanceof Error ? error.message : 'Failed to reach Orchestrate'
+          }
+        });
+      } catch {
+        // ignore
+      }
+      try {
+        controller?.abort();
+      } catch {
+        // ignore
+      }
     }
   });
 
@@ -10954,6 +11625,11 @@ Context:
           if (typeof filePath === 'string' && filePath.endsWith(`${path.sep}sw.js`)) {
             res.setHeader('Cache-Control', 'no-store');
           }
+
+          // Avoid stale HTML referencing missing hashed chunks.
+          if (typeof filePath === 'string' && filePath.endsWith('.html')) {
+            res.setHeader('Cache-Control', 'no-store');
+          }
         },
       }));
 
@@ -10963,6 +11639,8 @@ Context:
       });
 
     app.get(/^(?!\/api|.*\.(js|css|svg|png|jpg|jpeg|gif|ico|woff|woff2|ttf|eot|map)).*$/, (req, res) => {
+      // Always serve a fresh index so dynamic import chunk hashes stay in sync.
+      res.setHeader('Cache-Control', 'no-store');
       res.sendFile(path.join(distPath, 'index.html'));
     });
   } else {

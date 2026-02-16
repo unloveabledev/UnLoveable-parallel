@@ -74,6 +74,14 @@ const persistToLocalStorage = (settings: DesktopSettings) => {
   if (typeof settings.openInAppId === 'string' && settings.openInAppId.length > 0) {
     localStorage.setItem('openInAppId', settings.openInAppId);
   }
+  if (typeof settings.orchestrateBaseUrl === 'string') {
+    const trimmed = settings.orchestrateBaseUrl.trim();
+    if (trimmed.length > 0) {
+      localStorage.setItem('orchestrateBaseUrl', trimmed);
+    } else {
+      localStorage.removeItem('orchestrateBaseUrl');
+    }
+  }
 };
 
 type PersistApi = {
@@ -649,6 +657,20 @@ const sanitizeWebSettings = (payload: unknown): DesktopSettings | null => {
   const skillCatalogs = sanitizeSkillCatalogs(candidate.skillCatalogs);
   if (skillCatalogs) {
     result.skillCatalogs = skillCatalogs;
+  }
+
+  if (typeof candidate.orchestrateBaseUrl === 'string') {
+    const trimmed = candidate.orchestrateBaseUrl.trim();
+    result.orchestrateBaseUrl = trimmed.length > 0 ? trimmed : undefined;
+  }
+  if (typeof candidate.orchestrateTokenPresent === 'boolean') {
+    result.orchestrateTokenPresent = candidate.orchestrateTokenPresent;
+  }
+  // Token is intentionally not persisted to localStorage and should not be returned by the server.
+  // We still accept it here for backwards-compatibility with older servers.
+  if (typeof candidate.orchestrateToken === 'string') {
+    const trimmed = candidate.orchestrateToken.trim();
+    result.orchestrateToken = trimmed.length > 0 ? trimmed : undefined;
   }
 
   return result;

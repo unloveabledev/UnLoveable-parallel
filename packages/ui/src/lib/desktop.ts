@@ -111,6 +111,12 @@ export type DesktopSettings = {
 
   // User-added skills catalogs (persisted to ~/.config/openchamber/settings.json)
   skillCatalogs?: SkillCatalogConfig[];
+
+  orchestrateBaseUrl?: string;
+  orchestrateToken?: string;
+  // Derived/server-computed helper: true when a token is stored server-side.
+  // Token value is not returned to the UI.
+  orchestrateTokenPresent?: boolean;
 };
 
 type TauriGlobal = {

@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orchestrate.dev/schemas/AgentTask.schema.json",
+  "title": "AgentTask",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "taskId",
+    "runId",
+    "assignedBy",
+    "workerProfile",
+    "loop",
+    "objective",
+    "inputs",
+    "constraints",
+    "acceptance",
+    "requiredEvidence"
+  ],
+  "properties": {
+    "taskId": { "type": "string", "minLength": 1 },
+    "runId": { "type": "string", "minLength": 1 },
+    "assignedBy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent", "iteration"],
+      "properties": {
+        "agent": { "type": "string", "const": "orchestrator" },
+        "iteration": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "workerProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "model"],
+      "properties": {
+        "name": { "type": "string" },
+        "model": { "type": "string" }
+      }
+    },
+    "dependencies": {
+      "type": "array",
+      "default": [],
+      "items": { "type": "string" }
+    },
+    "loop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxIterations", "currentIteration", "allowedStages"],
+      "properties": {
+        "maxIterations": { "type": "integer", "minimum": 1 },
+        "currentIteration": { "type": "integer", "minimum": 1 },
+        "allowedStages": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["plan", "act", "check", "fix", "report"]
+          },
+          "contains": { "const": "plan" }
+        }
+      }
+    },
+    "objective": { "type": "string", "minLength": 1 },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timeoutMs", "budgetTokens", "allowedSkills"],
+      "properties": {
+        "timeoutMs": { "type": "integer", "minimum": 1000 },
+        "budgetTokens": { "type": "integer", "minimum": 1 },
+        "allowedSkills": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "acceptance": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "description"],
+        "properties": {
+          "id": { "type": "string" },
+          "description": { "type": "string" }
+        }
+      }
+    },
+    "requiredEvidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "description"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["test_result", "log_excerpt", "diff", "artifact", "metric", "screenshot"]
+          },
+          "description": { "type": "string" },
+          "required": { "type": "boolean", "default": true }
+        }
+      }
+    },
+    "outputFormat": {
+      "type": "string",
+      "const": "AgentResult.schema.json"
+    }
+  }
+}

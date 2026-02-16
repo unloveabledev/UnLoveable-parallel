@@ -8,6 +8,7 @@ import { ROUTE_PARAMS } from './types';
 export interface AppRouteState {
   sessionId: string | null;
   tab: MainTab;
+  runId: string | null;
   isSettingsOpen: boolean;
   settingsSection: SidebarSection;
   diffFile: string | null;
@@ -38,8 +39,9 @@ export function serializeRoute(state: AppRouteState): URLSearchParams {
     return params;
   }
 
-  // Tab - only include if not the default
-  if (state.tab !== DEFAULT_TAB) {
+  // Tab - only include if not the default.
+  // Note: Runs use pathname routing (/runs/:id) instead of query params.
+  if (state.tab !== DEFAULT_TAB && state.tab !== 'runs') {
     params.set(ROUTE_PARAMS.TAB, state.tab);
   }
 
@@ -49,6 +51,13 @@ export function serializeRoute(state: AppRouteState): URLSearchParams {
   }
 
   return params;
+}
+
+function buildPathname(state: AppRouteState): string {
+  if (state.tab === 'runs' && state.runId && state.runId.trim().length > 0) {
+    return `/runs/${encodeURIComponent(state.runId.trim())}`;
+  }
+  return '/';
 }
 
 /**
@@ -123,7 +132,7 @@ export function updateBrowserURL(
 
   try {
     const params = serializeRoute(state);
-    const url = buildURL(params);
+    const url = buildURL(params, buildPathname(state));
 
     if (options.replace) {
       window.history.replaceState({ ...window.history.state, route: state }, '', url);

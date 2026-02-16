@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orchestrate.dev/schemas/AgentResult.schema.json",
+  "title": "AgentResult",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "resultId",
+    "taskId",
+    "runId",
+    "agentRole",
+    "iteration",
+    "stage",
+    "status",
+    "summary",
+    "checks",
+    "evidence",
+    "artifacts",
+    "metrics",
+    "next"
+  ],
+  "properties": {
+    "resultId": { "type": "string" },
+    "taskId": { "type": "string" },
+    "runId": { "type": "string" },
+    "agentRole": {
+      "type": "string",
+      "enum": ["orchestrator", "worker"]
+    },
+    "workerId": {
+      "type": ["string", "null"]
+    },
+    "iteration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index", "max", "attempt"],
+      "properties": {
+        "index": { "type": "integer", "minimum": 1 },
+        "max": { "type": "integer", "minimum": 1 },
+        "attempt": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "stage": {
+      "type": "string",
+      "enum": ["plan", "act", "check", "fix", "report"]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["in_progress", "succeeded", "failed", "needs_fix"]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["checkId", "passed", "reason"],
+        "properties": {
+          "checkId": { "type": "string" },
+          "passed": { "type": "boolean" },
+          "reason": { "type": "string" }
+        }
+      },
+      "default": []
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["evidenceId", "type", "uri", "description", "hash"],
+        "properties": {
+          "evidenceId": { "type": "string" },
+          "type": {
+            "type": "string",
+            "enum": ["test_result", "log_excerpt", "diff", "artifact", "metric", "screenshot"]
+          },
+          "uri": { "type": "string" },
+          "description": { "type": "string" },
+          "hash": { "type": "string", "minLength": 8 },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["artifactId", "kind", "uri"],
+        "properties": {
+          "artifactId": { "type": "string" },
+          "kind": { "type": "string" },
+          "uri": { "type": "string" },
+          "sizeBytes": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "default": []
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["durationMs", "tokensUsed", "costUsd"],
+      "properties": {
+        "durationMs": { "type": "integer", "minimum": 0 },
+        "tokensUsed": { "type": "integer", "minimum": 0 },
+        "costUsd": { "type": "number", "minimum": 0 }
+      }
+    },
+    "next": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["recommendedStage", "reason"],
+      "properties": {
+        "recommendedStage": {
+          "type": "string",
+          "enum": ["plan", "act", "check", "fix", "report", "end"]
+        },
+        "reason": { "type": "string" }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "stage": { "const": "report" }, "status": { "const": "succeeded" } },
+        "required": ["stage", "status"]
+      },
+      "then": {
+        "properties": {
+          "evidence": { "minItems": 1 }
+        }
+      }
+    }
+  ]
+}

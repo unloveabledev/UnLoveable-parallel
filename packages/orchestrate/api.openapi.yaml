@@ -1,0 +1,79 @@
+openapi: 3.1.0
+info:
+  title: Orchestrate API
+  version: 0.1.0
+servers:
+  - url: http://localhost:8787
+paths:
+  /runs:
+    post:
+      summary: Create run
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrchestrationPackage'
+      responses:
+        '201':
+          description: Created
+        '400':
+          description: Invalid package
+  /runs/{id}:
+    get:
+      summary: Get run
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+        '404':
+          description: Not found
+  /runs/{id}/events:
+    get:
+      summary: SSE stream
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+        - in: header
+          name: Last-Event-ID
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '404':
+          description: Not found
+  /runs/{id}/cancel:
+    post:
+      summary: Cancel run
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '202':
+          description: Cancel accepted
+        '404':
+          description: Not found
+        '409':
+          description: Already terminal
+components:
+  schemas:
+    OrchestrationPackage:
+      type: object
+      additionalProperties: true

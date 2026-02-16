@@ -4,5 +4,6 @@ export { GitView } from './GitView';
 export { DiffView, useDiffFileCount } from './DiffView';
 export { TerminalView } from './TerminalView';
 export { FilesView } from './FilesView';
+export { RunMonitorView } from './RunMonitorView';
 export { SettingsView } from './SettingsView';
 export { SettingsWindow } from './SettingsWindow';

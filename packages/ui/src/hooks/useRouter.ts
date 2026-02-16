@@ -43,6 +43,7 @@ export function useRouter(): void {
   const setSettingsDialogOpen = useUIStore((state) => state.setSettingsDialogOpen);
   const setSidebarSection = useUIStore((state) => state.setSidebarSection);
   const navigateToDiff = useUIStore((state) => state.navigateToDiff);
+  const setActiveRunId = useUIStore((state) => state.setActiveRunId);
 
   /**
    * Apply a parsed route state to the application stores.
@@ -82,6 +83,14 @@ export function useRouter(): void {
           setActiveMainTab(route.tab);
         }
 
+        // 3.5 Apply run id (runs monitor)
+        if (route.runId) {
+          setActiveRunId(route.runId);
+        } else if (useUIStore.getState().activeRunId && route.tab !== 'runs') {
+          // Leaving runs: clear activeRunId (avoid stale URL sync)
+          setActiveRunId(null);
+        }
+
         // 4. Apply diff file (only if going to diff tab)
         if (route.diffFile && (route.tab === 'diff' || !route.tab)) {
           navigateToDiff(route.diffFile);
@@ -90,7 +99,7 @@ export function useRouter(): void {
         isApplyingRouteRef.current = false;
       }
     },
-    [setCurrentSession, setActiveMainTab, setSettingsDialogOpen, setSidebarSection, navigateToDiff]
+    [setCurrentSession, setActiveMainTab, setSettingsDialogOpen, setSidebarSection, navigateToDiff, setActiveRunId]
   );
 
   /**
@@ -103,6 +112,7 @@ export function useRouter(): void {
     return {
       sessionId: sessionState.currentSessionId,
       tab: uiState.activeMainTab,
+      runId: uiState.activeRunId,
       isSettingsOpen: uiState.isSettingsDialogOpen,
       settingsSection: uiState.sidebarSection,
       diffFile: uiState.pendingDiffFile,
@@ -269,6 +279,9 @@ export function navigateToRoute(route: Partial<RouteState>): void {
     } else if (route.tab) {
       useUIStore.getState().setActiveMainTab(route.tab);
     }
+    if (route.runId !== undefined) {
+      useUIStore.getState().setActiveRunId(route.runId);
+    }
     if (route.diffFile) {
       useUIStore.getState().navigateToDiff(route.diffFile);
     }
@@ -277,6 +290,7 @@ export function navigateToRoute(route: Partial<RouteState>): void {
 
   // Build URL and navigate
   const params = new URLSearchParams();
+  let pathname = window.location.pathname;
 
   if (route.sessionId) {
     params.set('session', route.sessionId);
@@ -287,14 +301,20 @@ export function navigateToRoute(route: Partial<RouteState>): void {
     if (useUIStore.getState().isSettingsDialogOpen) {
       useUIStore.getState().setSettingsDialogOpen(false);
     }
-    params.set('tab', route.tab);
+    if (route.tab !== 'runs') {
+      params.set('tab', route.tab);
+    }
   }
   if (route.diffFile) {
     params.set('file', route.diffFile);
   }
 
+  if (route.tab === 'runs' && typeof route.runId === 'string' && route.runId.trim().length > 0) {
+    pathname = `/runs/${encodeURIComponent(route.runId.trim())}`;
+  }
+
   const search = params.toString();
-  const url = search ? `${window.location.pathname}?${search}` : window.location.pathname;
+  const url = search ? `${pathname}?${search}` : pathname;
 
   window.history.pushState({ route }, '', url);
 
@@ -307,6 +327,9 @@ export function navigateToRoute(route: Partial<RouteState>): void {
     useUIStore.getState().setSettingsDialogOpen(true);
   } else if (route.tab) {
     useUIStore.getState().setActiveMainTab(route.tab);
+  }
+  if (route.runId !== undefined) {
+    useUIStore.getState().setActiveRunId(route.runId);
   }
   if (route.diffFile) {
     useUIStore.getState().navigateToDiff(route.diffFile);

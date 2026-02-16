@@ -524,6 +524,9 @@ export interface SettingsPayload {
   directoryShowHidden?: boolean;
   filesViewShowGitignored?: boolean;
   openInAppId?: string;
+  orchestrateBaseUrl?: string;
+  orchestrateToken?: string;
+  orchestrateTokenPresent?: boolean;
 
   [key: string]: unknown;
 }

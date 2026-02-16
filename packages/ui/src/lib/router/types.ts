@@ -10,6 +10,8 @@ export interface RouteState {
   sessionId: string | null;
   /** Main tab to display (chat, git, diff, terminal, files) */
   tab: MainTab | null;
+  /** Orchestrate run id for /runs/:id monitor */
+  runId: string | null;
   /** Settings section - when non-null, settings dialog should be open */
   settingsSection: SidebarSection | null;
   /** File path for diff view */
@@ -29,7 +31,7 @@ export interface RouterContext {
 /**
  * Valid main tab values for URL routing.
  */
-export const VALID_TABS: readonly MainTab[] = ['chat', 'git', 'diff', 'terminal', 'files'] as const;
+export const VALID_TABS: readonly MainTab[] = ['chat', 'git', 'diff', 'terminal', 'files', 'runs'] as const;
 
 /**
  * Valid settings section values for URL routing.

@@ -4,7 +4,7 @@ import type { SidebarSection } from '@/constants/sidebar';
 import { getSafeStorage } from './utils/safeStorage';
 import { SEMANTIC_TYPOGRAPHY, getTypographyVariable, type SemanticTypographyKey } from '@/lib/typography';
 
-export type MainTab = 'chat' | 'plan' | 'git' | 'diff' | 'terminal' | 'files';
+export type MainTab = 'chat' | 'plan' | 'git' | 'diff' | 'terminal' | 'files' | 'runs';
 
 export type MainTabGuard = (nextTab: MainTab) => boolean;
 export type EventStreamStatus =
@@ -67,6 +67,7 @@ interface UIStore {
   hasManuallyResizedBottomTerminal: boolean;
   isSessionSwitcherOpen: boolean;
   activeMainTab: MainTab;
+  activeRunId: string | null;
   mainTabGuard: MainTabGuard | null;
   sidebarOpenBeforeFullscreenTab: boolean | null;
   pendingDiffFile: string | null;
@@ -147,6 +148,7 @@ interface UIStore {
   setBottomTerminalHeight: (height: number) => void;
   setSessionSwitcherOpen: (open: boolean) => void;
   setActiveMainTab: (tab: MainTab) => void;
+  setActiveRunId: (runId: string | null) => void;
   setMainTabGuard: (guard: MainTabGuard | null) => void;
   setPendingDiffFile: (filePath: string | null) => void;
   navigateToDiff: (filePath: string) => void;
@@ -231,6 +233,7 @@ export const useUIStore = create<UIStore>()(
         hasManuallyResizedBottomTerminal: false,
         isSessionSwitcherOpen: false,
         activeMainTab: 'chat',
+        activeRunId: null,
         mainTabGuard: null,
         sidebarOpenBeforeFullscreenTab: null,
         pendingDiffFile: null,
@@ -450,6 +453,10 @@ export const useUIStore = create<UIStore>()(
           } else {
             set({ activeMainTab: tab });
           }
+        },
+
+        setActiveRunId: (runId) => {
+          set({ activeRunId: runId });
         },
 
         setPendingDiffFile: (filePath) => {

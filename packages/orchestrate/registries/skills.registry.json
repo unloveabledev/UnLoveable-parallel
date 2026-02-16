@@ -1,0 +1,17 @@
+{
+  "version": "1.0.0",
+  "skills": [
+    {
+      "name": "spawn_worker",
+      "owner": "orchestrate"
+    },
+    {
+      "name": "await_worker",
+      "owner": "orchestrate"
+    },
+    {
+      "name": "validate_evidence",
+      "owner": "orchestrate"
+    }
+  ]
+}

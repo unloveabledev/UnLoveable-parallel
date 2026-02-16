@@ -18,7 +18,7 @@ import { useDeviceInfo } from '@/lib/device';
 import { useEdgeSwipe } from '@/hooks/useEdgeSwipe';
 import { cn } from '@/lib/utils';
 
-import { ChatView, PlanView, GitView, DiffView, TerminalView, FilesView, SettingsView, SettingsWindow } from '@/components/views';
+import { ChatView, PlanView, GitView, DiffView, TerminalView, FilesView, RunMonitorView, SettingsView, SettingsWindow } from '@/components/views';
 
 export const MainLayout: React.FC = () => {
     const RIGHT_SIDEBAR_AUTO_CLOSE_WIDTH = 1140;
@@ -431,6 +431,8 @@ export const MainLayout: React.FC = () => {
                 return <TerminalView />;
             case 'files':
                 return <FilesView />;
+            case 'runs':
+                return <RunMonitorView />;
             default:
                 return null;
         }

@@ -47,6 +47,11 @@ import {
     DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
+import { useDirectoryStore } from '@/stores/useDirectoryStore';
+import { SimpleAutoDialog } from '@/components/orchestrate/SimpleAutoDialog';
+import { AdvancedAutoDialog } from '@/components/orchestrate/AdvancedAutoDialog';
+import { navigateToRoute } from '@/hooks/useRouter';
+import { OpenChamberLogo } from '@/components/ui/OpenChamberLogo';
 
 const MAX_VISIBLE_TEXTAREA_LINES = 8;
 const EMPTY_QUEUE: QueuedMessage[] = [];
@@ -57,6 +62,21 @@ interface ChatInputProps {
 }
 
 const CHAT_INPUT_DRAFT_KEY = 'openchamber_chat_input_draft';
+const CHAT_INPUT_MODE_KEY = 'openchamber_chat_input_mode';
+
+type ChatInteractionMode = 'prompt' | 'auto-simple' | 'auto-advanced';
+
+const getStoredMode = (): ChatInteractionMode => {
+    try {
+        const raw = localStorage.getItem(CHAT_INPUT_MODE_KEY);
+        if (raw === 'prompt' || raw === 'auto-simple' || raw === 'auto-advanced') {
+            return raw;
+        }
+    } catch {
+        // ignore
+    }
+    return 'prompt';
+};
 
 // Helper to safely read from localStorage
 const getStoredDraft = (): string => {
@@ -122,12 +142,42 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBo
     const agents = getVisibleAgents();
     const primaryAgents = React.useMemo(() => agents.filter((agent) => agent.mode === 'primary'), [agents]);
     const { isMobile, inputBarOffset, isKeyboardOpen, setTimelineDialogOpen, cornerRadius, persistChatDraft } = useUIStore();
+    const currentDirectory = useDirectoryStore((s) => s.currentDirectory);
     const { working } = useAssistantStatus();
     const { currentTheme } = useThemeSystem();
     const [showAbortStatus, setShowAbortStatus] = React.useState(false);
     const abortTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
     const prevWasAbortedRef = React.useRef(false);
     const sendTriggeredByPointerDownRef = React.useRef(false);
+
+    const [interactionMode, setInteractionMode] = React.useState<ChatInteractionMode>(() => getStoredMode());
+    const [simpleAutoOpen, setSimpleAutoOpen] = React.useState(false);
+    const [advancedAutoOpen, setAdvancedAutoOpen] = React.useState(false);
+
+    const persistInteractionMode = React.useCallback((mode: ChatInteractionMode) => {
+        setInteractionMode(mode);
+        try {
+            localStorage.setItem(CHAT_INPUT_MODE_KEY, mode);
+        } catch {
+            // ignore
+        }
+    }, []);
+
+    const orchestrateModel = React.useMemo(() => {
+        if (currentProviderId && currentModelId) {
+            return `${currentProviderId}/${currentModelId}`;
+        }
+        return 'opencode/big-pickle';
+    }, [currentModelId, currentProviderId]);
+
+    const isOrchestrateConfigured = React.useCallback((): boolean => {
+        try {
+            const raw = localStorage.getItem('orchestrateBaseUrl') || '';
+            return raw.trim().length > 0;
+        } catch {
+            return false;
+        }
+    }, []);
 
     // Message queue
     const queueModeEnabled = useMessageQueueStore((state) => state.queueModeEnabled);
@@ -664,13 +714,26 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBo
 
     // Primary action for send button - respects queue mode setting
     const handlePrimaryAction = React.useCallback(() => {
+        if (interactionMode !== 'prompt') {
+            if (!isOrchestrateConfigured()) {
+                toast.error('Auto Mode needs Orchestrate configured (Settings → OpenChamber → Orchestrate).');
+                navigateToRoute({ settingsSection: 'settings' });
+                return;
+            }
+            if (interactionMode === 'auto-advanced') {
+                setAdvancedAutoOpen(true);
+                return;
+            }
+            setSimpleAutoOpen(true);
+            return;
+        }
         const canQueue = hasContent && currentSessionId && sessionPhase !== 'idle';
         if (queueModeEnabled && canQueue) {
             handleQueueMessage();
         } else {
             void handleSubmitRef.current();
         }
-    }, [hasContent, currentSessionId, sessionPhase, queueModeEnabled, handleQueueMessage]);
+    }, [interactionMode, isOrchestrateConfigured, hasContent, currentSessionId, sessionPhase, queueModeEnabled, handleQueueMessage]);
 
     // Auto-send queued messages when session becomes idle (but not after abort)
     React.useEffect(() => {
@@ -1871,6 +1934,42 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBo
         </div>
     );
 
+    const modeMenu = (
+        <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+                <button
+                    type="button"
+                    className={cn(
+                        footerIconButtonClass,
+                        'rounded-md text-muted-foreground',
+                        'hover:bg-interactive-hover/40 hover:text-foreground'
+                    )}
+                    title={
+                        interactionMode === 'prompt'
+                            ? 'Prompt Mode'
+                            : interactionMode === 'auto-advanced'
+                                ? 'Advanced Auto'
+                                : 'Simple Auto'
+                    }
+                    aria-label="Interaction mode"
+                >
+                    <OpenChamberLogo width={18} height={18} isAnimated={interactionMode !== 'prompt'} className="opacity-95" />
+                </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+                <DropdownMenuItem onSelect={() => persistInteractionMode('prompt')}>
+                    Prompt Mode
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => persistInteractionMode('auto-simple')}>
+                    Simple Auto
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => persistInteractionMode('auto-advanced')}>
+                    Advanced Auto
+                </DropdownMenuItem>
+            </DropdownMenuContent>
+        </DropdownMenu>
+    );
+
     const workingStatusText = working.statusText;
 
     React.useEffect(() => {
@@ -1910,6 +2009,32 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBo
             data-keyboard-avoid="true"
             style={isMobile && inputBarOffset > 0 && !isKeyboardOpen ? { marginBottom: `${inputBarOffset}px` } : undefined}
         >
+            <SimpleAutoDialog
+                open={simpleAutoOpen}
+                onOpenChange={setSimpleAutoOpen}
+                defaultGoalText={message}
+                model={orchestrateModel}
+                previewCwd={currentDirectory}
+                onCreatedRun={(id) => {
+                    useUIStore.getState().setActiveRunId(id);
+                    useUIStore.getState().setActiveMainTab('runs');
+                    navigateToRoute({ tab: 'runs', runId: id });
+                    scrollToBottom?.({ instant: true, force: true });
+                }}
+            />
+            <AdvancedAutoDialog
+                open={advancedAutoOpen}
+                onOpenChange={setAdvancedAutoOpen}
+                defaultGoalText={message}
+                model={orchestrateModel}
+                previewCwd={currentDirectory}
+                onCreatedRun={(id) => {
+                    useUIStore.getState().setActiveRunId(id);
+                    useUIStore.getState().setActiveMainTab('runs');
+                    navigateToRoute({ tab: 'runs', runId: id });
+                    scrollToBottom?.({ instant: true, force: true });
+                }}
+            />
             {/* Absolute positioned above input - no layout shift */}
             <div className="absolute bottom-full left-0 right-0">
                 <StatusRow
@@ -2083,6 +2208,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBo
                                         <div className="flex items-center gap-x-1 min-w-0 max-w-[60vw] flex-shrink">
                                             <MobileModelButton onOpenModel={handleOpenMobileControls} className="min-w-0 flex-shrink" />
                                             <MobileAgentButton onOpenAgentPanel={() => setMobileControlsPanel('agent')} className="min-w-0 flex-shrink" />
+                                            {modeMenu}
                                         </div>
                                         <div className="flex items-center gap-x-1 flex-shrink-0">
                                             <BrowserVoiceButton />
@@ -2111,6 +2237,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBo
                                 </div>
                                 <div className={cn('flex items-center flex-1 justify-end', footerGapClass, 'md:gap-x-3')}>
                                     <ModelControls className={cn('flex-1 min-w-0 justify-end')} />
+                                    {modeMenu}
                                     <BrowserVoiceButton />
                                     {actionButtons}
                                 </div>

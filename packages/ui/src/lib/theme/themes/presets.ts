@@ -35,6 +35,8 @@ import mono_dark_Raw from './mono-dark.json';
 import mono_light_Raw from './mono-light.json';
 import vitesse_dark_dark_Raw from './vitesse-dark-dark.json';
 import vitesse_light_light_Raw from './vitesse-light-light.json';
+import unloveable_dark_Raw from './unloveable-dark.json';
+import unloveable_light_Raw from './unloveable-light.json';
 
 export const presetThemes: Theme[] = [
   aura_dark_Raw as Theme,
@@ -71,4 +73,6 @@ export const presetThemes: Theme[] = [
   mono_light_Raw as Theme,
   vitesse_dark_dark_Raw as Theme,
   vitesse_light_light_Raw as Theme,
+  unloveable_dark_Raw as Theme,
+  unloveable_light_Raw as Theme,
 ].map((theme) => withPrColors(theme));

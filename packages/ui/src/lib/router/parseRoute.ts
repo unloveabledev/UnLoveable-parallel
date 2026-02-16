@@ -13,13 +13,35 @@ import {
  */
 export function parseRoute(searchParams?: URLSearchParams): RouteState {
   const params = searchParams ?? getSearchParams();
+  const runId = parseRunIdFromPathname();
 
   return {
     sessionId: parseSessionId(params),
-    tab: parseTab(params),
+    tab: runId ? 'runs' : parseTab(params),
+    runId,
     settingsSection: parseSettingsSection(params),
     diffFile: parseDiffFile(params),
   };
+}
+
+function parseRunIdFromPathname(): string | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  const raw = window.location?.pathname || '';
+  const match = raw.match(/^\/runs\/([^/]+)\/?$/);
+  if (!match) {
+    return null;
+  }
+  const encoded = match[1] || '';
+  if (!encoded) {
+    return null;
+  }
+  try {
+    return decodeURIComponent(encoded);
+  } catch {
+    return encoded;
+  }
 }
 
 /**
@@ -121,6 +143,10 @@ export function hasRouteParams(): boolean {
 
   try {
     const params = new URLSearchParams(window.location.search);
+    const pathname = window.location.pathname || '';
+    if (/^\/runs\/[^/]+\/?$/.test(pathname)) {
+      return true;
+    }
     return (
       params.has(ROUTE_PARAMS.SESSION) ||
       params.has(ROUTE_PARAMS.TAB) ||

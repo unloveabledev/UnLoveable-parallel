@@ -1,0 +1,86 @@
+{
+  "metadata": {
+    "id": "unloveable-dark",
+    "name": "UnLoveAble",
+    "description": "Cyan/purple accent (dark)",
+    "version": "1.0.0",
+    "variant": "dark",
+    "tags": ["custom", "dark", "cyan", "purple"]
+  },
+  "colors": {
+    "primary": {
+      "base": "#00d4ff",
+      "hover": "#7c3aed",
+      "active": "#a855f7",
+      "foreground": "#0a0a0a",
+      "muted": "rgba(0, 212, 255, 0.35)",
+      "emphasis": "#ec4899"
+    },
+    "surface": {
+      "background": "#0a0a0a",
+      "foreground": "#ffffff",
+      "muted": "#121212",
+      "mutedForeground": "#9ca3af",
+      "elevated": "#0f1419",
+      "elevatedForeground": "#ffffff",
+      "overlay": "rgba(0, 0, 0, 0.5)",
+      "subtle": "#1a1f2e"
+    },
+    "interactive": {
+      "border": "#334155",
+      "borderHover": "#475569",
+      "borderFocus": "#00d4ff",
+      "selection": "rgba(0, 212, 255, 0.16)",
+      "selectionForeground": "#ffffff",
+      "focus": "#00d4ff",
+      "focusRing": "rgba(0, 212, 255, 0.45)",
+      "cursor": "#ffffff",
+      "hover": "rgba(30, 41, 59, 0.55)",
+      "active": "rgba(30, 41, 59, 0.75)"
+    },
+    "status": {
+      "error": "#ef4444",
+      "errorForeground": "#0a0a0a",
+      "errorBackground": "rgba(239, 68, 68, 0.16)",
+      "errorBorder": "rgba(239, 68, 68, 0.35)",
+      "warning": "#f59e0b",
+      "warningForeground": "#0a0a0a",
+      "warningBackground": "rgba(245, 158, 11, 0.16)",
+      "warningBorder": "rgba(245, 158, 11, 0.35)",
+      "success": "#22c55e",
+      "successForeground": "#0a0a0a",
+      "successBackground": "rgba(34, 197, 94, 0.16)",
+      "successBorder": "rgba(34, 197, 94, 0.35)",
+      "info": "#00d4ff",
+      "infoForeground": "#0a0a0a",
+      "infoBackground": "rgba(0, 212, 255, 0.16)",
+      "infoBorder": "rgba(0, 212, 255, 0.35)"
+    },
+    "pr": {
+      "open": "#22c55e",
+      "draft": "#9ca3af",
+      "blocked": "#f59e0b",
+      "merged": "#a855f7",
+      "closed": "#ef4444"
+    },
+    "syntax": {
+      "base": {
+        "background": "#0f1419",
+        "foreground": "#e5e7eb",
+        "comment": "#6b7280",
+        "keyword": "#a855f7",
+        "string": "#00d4ff",
+        "number": "#ec4899",
+        "function": "#ffffff",
+        "variable": "#e5e7eb",
+        "type": "#7c3aed",
+        "operator": "#9ca3af"
+      },
+      "highlights": {
+        "diffAdded": "rgba(34, 197, 94, 0.25)",
+        "diffRemoved": "rgba(239, 68, 68, 0.25)",
+        "lineNumber": "#6b7280"
+      }
+    }
+  }
+}

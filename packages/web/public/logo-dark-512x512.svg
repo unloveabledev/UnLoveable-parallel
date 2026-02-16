@@ -1,16 +1,15 @@
-<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
-  <!-- OpenChamber logo - simplified, no background (for dark backgrounds) -->
-  <g transform="translate(256, 256) scale(4)">
-    <!-- Left face - simplified, no grid cells -->
-    <path d="M0 0 L-41.568 -24 L-41.568 24 L0 48 Z" fill="white" fill-opacity="0.2" stroke="white" stroke-width="3" stroke-linejoin="round"/>
-    <!-- Right face - simplified, no grid cells -->
-    <path d="M0 0 L41.568 -24 L41.568 24 L0 48 Z" fill="white" fill-opacity="0.35" stroke="white" stroke-width="3" stroke-linejoin="round"/>
-    <!-- Top face - open -->
-    <path d="M0 -48 L-41.568 -24 L0 0 L41.568 -24 Z" fill="none" stroke="white" stroke-width="3" stroke-linejoin="round"/>
-    <!-- OpenCode logo on top face -->
-    <g transform="matrix(0.866, 0.5, -0.866, 0.5, 0, -24) scale(0.75)">
-      <path fill-rule="evenodd" clip-rule="evenodd" d="M-16 -20 L16 -20 L16 20 L-16 20 Z M-8 -12 L-8 12 L8 12 L8 -12 Z" fill="white"/>
-      <path d="M-8 -4 L8 -4 L8 12 L-8 12 Z" fill="white" fill-opacity="0.4"/>
-    </g>
-  </g>
+<svg width="512" height="512" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="logo-heart" x1="28" y1="20" x2="208" y2="220" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ff7a8e" />
+      <stop offset="0.52" stop-color="#e2134f" />
+      <stop offset="1" stop-color="#74002b" />
+    </linearGradient>
+    <linearGradient id="logo-crack" x1="126" y1="55" x2="132" y2="214" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7adfff" />
+      <stop offset="1" stop-color="#39b6ff" />
+    </linearGradient>
+  </defs>
+  <path d="M128 226 C124 222 116 214 104 203 C84 185 65 168 50 151 C36 135 26 118 26 98 C26 66 51 42 82 42 C102 42 118 50 128 64 C138 50 154 42 174 42 C205 42 230 66 230 98 C230 118 220 135 206 151 C191 168 172 185 152 203 C140 214 132 222 128 226 Z" fill="url(#logo-heart)"/>
+  <path d="M134 68 L119 92 L132 112 L118 136 L131 156 L120 178 L128 206" stroke="url(#logo-crack)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

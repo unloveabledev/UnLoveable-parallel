@@ -10,6 +10,7 @@ import { NotificationSettings } from './NotificationSettings';
 import { GitHubSettings } from './GitHubSettings';
 import { VoiceSettings } from './VoiceSettings';
 import { OpenCodeCliSettings } from './OpenCodeCliSettings';
+import { OrchestrateSettings } from './OrchestrateSettings';
 import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
 import { useDeviceInfo } from '@/lib/device';
 import { isVSCodeRuntime, isWebRuntime } from '@/lib/desktop';
@@ -73,6 +74,8 @@ export const OpenChamberPage: React.FC<OpenChamberPageProps> = ({ section }) => 
                 return <NotificationSectionContent />;
             case 'voice':
                 return <VoiceSectionContent />;
+            case 'orchestrate':
+                return <OrchestrateSectionContent />;
             default:
                 return null;
         }
@@ -159,4 +162,12 @@ const VoiceSectionContent: React.FC = () => {
         return null;
     }
     return <VoiceSettings />;
+};
+
+// Orchestrate section: base URL + token + connectivity test
+const OrchestrateSectionContent: React.FC = () => {
+    if (isVSCodeRuntime()) {
+        return null;
+    }
+    return <OrchestrateSettings />;
 };

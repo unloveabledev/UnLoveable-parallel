@@ -8,7 +8,7 @@ import { AboutSettings } from './AboutSettings';
 import { reloadOpenCodeConfiguration } from '@/stores/useAgentsStore';
 import { cn } from '@/lib/utils';
 
-export type OpenChamberSection = 'visual' | 'chat' | 'sessions' | 'git' | 'github' | 'notifications' | 'voice';
+export type OpenChamberSection = 'visual' | 'chat' | 'sessions' | 'git' | 'github' | 'notifications' | 'voice' | 'orchestrate';
 
 interface OpenChamberSidebarProps {
   selectedSection: OpenChamberSection;
@@ -62,6 +62,12 @@ const OPENCHAMBER_SECTION_GROUPS: SectionGroup[] = [
     label: 'Voice',
     items: ['Language', 'Continuous Mode'],
     badge: 'experimental',
+    hideInVSCode: true,
+  },
+  {
+    id: 'orchestrate',
+    label: 'Orchestrate',
+    items: ['Connection', 'Auto Mode'],
     hideInVSCode: true,
   },
 ];
