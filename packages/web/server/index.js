@@ -282,7 +282,7 @@ const resolveWorkspacePathFromWorktrees = async (targetPath, baseDirectory) => {
   const resolvedBase = path.resolve(baseDirectory || os.homedir());
 
   try {
-    const { getWorktrees } = await import('./lib/git-service.js');
+    const { getWorktrees } = await import('./lib/git/index.js');
     const worktrees = await getWorktrees(resolvedBase);
 
     for (const worktree of worktrees) {
@@ -3447,15 +3447,12 @@ const startGlobalEventWatcher = async () => {
 
             // Update authoritative session state from OpenCode events
             if (payload && payload.type === 'session.status') {
-              const status = payload.properties?.status;
-              const sessionId = payload.properties?.sessionID ?? payload.properties?.sessionId;
-              const eventId = payload.properties?.eventId || `sse-${Date.now()}`;
-
-              if (typeof sessionId === 'string' && status?.type) {
-                updateSessionState(sessionId, status.type, eventId, {
-                  attempt: status.attempt,
-                  message: status.message,
-                  next: status.next
+              const update = extractSessionStatusUpdate(payload);
+              if (update) {
+                updateSessionState(update.sessionId, update.type, update.eventId || `sse-${Date.now()}`, {
+                  attempt: update.attempt,
+                  message: update.message,
+                  next: update.next,
                 });
               }
             }
@@ -3907,13 +3904,10 @@ function deriveSessionActivityTransitions(payload) {
   }
 
   if (payload.type === 'session.status') {
-    const status = payload.properties?.status;
-    const sessionId = payload.properties?.sessionID ?? payload.properties?.sessionId;
-    const statusType = status?.type;
-
-    if (typeof sessionId === 'string' && sessionId.length > 0 && typeof statusType === 'string') {
-      const phase = statusType === 'busy' || statusType === 'retry' ? 'busy' : 'idle';
-      return [{ sessionId, phase }];
+    const update = extractSessionStatusUpdate(payload);
+    if (update) {
+      const phase = update.type === 'busy' || update.type === 'retry' ? 'busy' : 'idle';
+      return [{ sessionId: update.sessionId, phase }];
     }
   }
 
@@ -6207,6 +6201,20 @@ async function main(options = {}) {
       const payload = parseSseDataPayload(block);
       // Cache session titles from session.updated/session.created events (global stream)
       maybeCacheSessionInfoFromEvent(payload);
+
+      // Keep server-authoritative session state fresh even if the
+      // background watcher is disconnected.
+      if (payload && payload.type === 'session.status') {
+        const update = extractSessionStatusUpdate(payload);
+        if (update) {
+          updateSessionState(update.sessionId, update.type, update.eventId || `proxy-${Date.now()}`, {
+            attempt: update.attempt,
+            message: update.message,
+            next: update.next,
+          });
+        }
+      }
+
       const transitions = deriveSessionActivityTransitions(payload);
       if (transitions && transitions.length > 0) {
         for (const activity of transitions) {
@@ -6335,6 +6343,18 @@ async function main(options = {}) {
       const payload = parseSseDataPayload(block);
       // Cache session titles from session.updated/session.created events (per-session stream)
       maybeCacheSessionInfoFromEvent(payload);
+
+      if (payload && payload.type === 'session.status') {
+        const update = extractSessionStatusUpdate(payload);
+        if (update) {
+          updateSessionState(update.sessionId, update.type, update.eventId || `proxy-${Date.now()}`, {
+            attempt: update.attempt,
+            message: update.message,
+            next: update.next,
+          });
+        }
+      }
+
       const transitions = deriveSessionActivityTransitions(payload);
       if (transitions && transitions.length > 0) {
         for (const activity of transitions) {
@@ -7285,7 +7305,7 @@ async function main(options = {}) {
   const { scanSkillsRepository } = await import('./lib/skills-catalog/scan.js');
   const { installSkillsFromRepository } = await import('./lib/skills-catalog/install.js');
   const { scanClawdHubPage, installSkillsFromClawdHub, isClawdHubSource } = await import('./lib/skills-catalog/clawdhub/index.js');
-  const { getProfiles, getProfile } = await import('./lib/git-identity-storage.js');
+  const { getProfiles, getProfile } = await import('./lib/git/index.js');
 
   const listGitIdentitiesForResponse = () => {
     try {
@@ -8064,7 +8084,7 @@ async function main(options = {}) {
        let headOwnerForSearch = null;
        
        // First, check the branch's tracking info to see which remote it's on
-       const { getStatus } = await import('./lib/git-service.js');
+       const { getStatus } = await import('./lib/git/index.js');
        const status = await getStatus(directory).catch(() => null);
        if (status?.tracking) {
          const trackingRemote = status.tracking.split('/')[0];
@@ -8317,7 +8337,7 @@ async function main(options = {}) {
       // Determine the source remote for the head branch
       // Priority: 1) explicit headRemote, 2) tracking branch remote, 3) 'origin' if targeting non-origin
       let sourceRemote = headRemote;
-      const { getStatus, getRemotes } = await import('./lib/git-service.js');
+      const { getStatus, getRemotes } = await import('./lib/git/index.js');
       
       // If no explicit headRemote, check the branch's tracking info
       if (!sourceRemote) {
@@ -9317,11 +9337,7 @@ async function main(options = {}) {
   let gitLibraries = null;
   const getGitLibraries = async () => {
     if (!gitLibraries) {
-      const [storage, service] = await Promise.all([
-        import('./lib/git-identity-storage.js'),
-        import('./lib/git-service.js')
-      ]);
-      gitLibraries = { ...storage, ...service };
+      gitLibraries = await import('./lib/git/index.js');
     }
     return gitLibraries;
   };
@@ -9386,7 +9402,7 @@ async function main(options = {}) {
 
   app.get('/api/git/discover-credentials', async (req, res) => {
     try {
-      const { discoverGitCredentials } = await import('./lib/git-credentials.js');
+      const { discoverGitCredentials } = await import('./lib/git/index.js');
       const credentials = discoverGitCredentials();
       res.json(credentials);
     } catch (error) {
@@ -9573,6 +9589,7 @@ async function main(options = {}) {
         original: result.original,
         modified: result.modified,
         path: result.path,
+        isBinary: Boolean(result.isBinary),
       });
     } catch (error) {
       console.error('Failed to get git file diff:', error);
