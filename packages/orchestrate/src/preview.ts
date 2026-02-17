@@ -273,6 +273,21 @@ export class PreviewManager {
       res.setHeader(key, value)
     })
 
+    // MVP: rewrite absolute-root paths ("/foo") to relative ("foo") so
+    // apps like Vite dev servers can work behind a path prefix.
+    const contentType = upstream.headers.get('content-type') || ''
+    const shouldRewrite =
+      contentType.includes('text/html') ||
+      contentType.includes('javascript') ||
+      contentType.includes('text/css')
+
+    if (shouldRewrite) {
+      const text = await upstream.text().catch(() => '')
+      const rewritten = rewriteRootAbsoluteUrlsToRelative(text)
+      res.send(rewritten)
+      return
+    }
+
     if (!upstream.body) {
       res.end()
       return
@@ -331,6 +346,52 @@ export class PreviewManager {
       logsTail: entry.logs.slice(-50),
     }
   }
+}
+
+export function rewriteRootAbsoluteUrlsToRelative(body: string): string {
+  let out = String(body || '')
+  if (!out) {
+    return out
+  }
+
+  // 1) srcset needs special handling since it can contain multiple URLs.
+  out = rewriteSrcset(out)
+
+  // 2) CSS url(...) and @import.
+  out = rewriteCssRootUrls(out)
+
+  // 3) Unquoted HTML attributes like src=/foo.
+  out = out.replace(/(=\s*)\/(?!\/)/g, '$1')
+
+  // 4) Quoted strings: "/foo" or '/foo'.
+  // Avoid touching protocol-relative URLs like "//cdn.example.com".
+  out = out.replace(/(["'])\/(?!\/)/g, '$1')
+
+  return out
+}
+
+function rewriteCssRootUrls(body: string): string {
+  let out = body
+  // url(/foo) -> url(foo)
+  out = out.replace(/url\(\s*\/(?!\/)/gi, 'url(')
+  // url("/foo") -> url("foo") and url('/foo') -> url('foo')
+  out = out.replace(/url\(\s*(["'])\/(?!\/)/gi, 'url($1')
+  // @import "/foo.css" -> @import "foo.css"
+  out = out.replace(/@import\s+(["'])\/(?!\/)/gi, '@import $1')
+  return out
+}
+
+function rewriteSrcset(body: string): string {
+  return body.replace(/\bsrcset\s*=\s*(["'])([\s\S]*?)\1/gi, (_full, quote: string, value: string) => {
+    const rewritten = rewriteSrcsetValue(value)
+    return `srcset=${quote}${rewritten}${quote}`
+  })
+}
+
+function rewriteSrcsetValue(value: string): string {
+  // srcset items look like: "/a.png 1x, /b.png 2x".
+  // Rewrite only root-absolute paths, not protocol-relative.
+  return String(value || '').replace(/(^|[\s,])\/(?!\/)/g, '$1')
 }
 
 async function allocatePort(): Promise<number> {

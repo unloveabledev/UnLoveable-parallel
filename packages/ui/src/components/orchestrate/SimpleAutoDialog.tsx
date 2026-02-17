@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -67,7 +67,12 @@ export const SimpleAutoDialog: React.FC<SimpleAutoDialogProps> = ({
   const handleGenerateSpec = React.useCallback(async () => {
     setIsGenerating(true);
     try {
-      const result = await orchestrateGenerateSpec({ prompt: [title, description].filter(Boolean).join('\n\n'), model });
+      const prompt = [title, description].filter(Boolean).join('\n\n').trim() || (defaultGoalText ?? '').trim();
+      if (!prompt) {
+        toast.error('Add a goal/description before generating a spec.');
+        return;
+      }
+      const result = await orchestrateGenerateSpec({ prompt, model });
       const doc = Array.isArray(result.documents) ? result.documents.find((d) => d?.path === 'SPEC.md') : null;
       if (doc && typeof doc.content === 'string') {
         setRemoteSpec(doc.content);
@@ -78,7 +83,7 @@ export const SimpleAutoDialog: React.FC<SimpleAutoDialogProps> = ({
     } finally {
       setIsGenerating(false);
     }
-  }, [description, model, title]);
+  }, [defaultGoalText, description, model, title]);
 
   const handleRun = React.useCallback(async () => {
     setIsCreating(true);
@@ -100,9 +105,9 @@ export const SimpleAutoDialog: React.FC<SimpleAutoDialogProps> = ({
       <DialogContent className="max-w-3xl max-h-[85vh] overflow-auto" keyboardAvoid>
         <DialogHeader>
           <DialogTitle>Simple Auto</DialogTitle>
-          <div className="typography-meta text-muted-foreground">
+          <DialogDescription>
             Answer a few questions, review the generated spec, then start an Orchestrate run.
-          </div>
+          </DialogDescription>
         </DialogHeader>
 
         <div className="grid gap-4 lg:grid-cols-2">

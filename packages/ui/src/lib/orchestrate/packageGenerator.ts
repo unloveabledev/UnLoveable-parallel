@@ -8,6 +8,7 @@ export type AutoAdvancedBundle = {
   spec: string;
   uiSpec: string;
   prompt: string;
+  registry: string;
   implementationPlan: string;
   architecturePlan: string;
 };
@@ -110,6 +111,15 @@ export function seedAdvancedBundle(seed: string): AutoAdvancedBundle {
       '## Quality Bar',
       '- Include tests or validation where relevant',
       '- Explain tradeoffs for important decisions',
+    ].join('\n'),
+    registry: [
+      '# Registry',
+      '',
+      '## Variables',
+      '- (none)',
+      '',
+      '## Functions',
+      '- (none)',
     ].join('\n'),
     implementationPlan: [
       '# Implementation Plan',
@@ -269,6 +279,7 @@ export function generateOrchestrationPackageFromAdvancedBundle(input: {
     toDocumentSection('Spec', input.bundle.spec),
     toDocumentSection('UI Spec', input.bundle.uiSpec),
     toDocumentSection('Prompt', input.bundle.prompt),
+    toDocumentSection('Registry', input.bundle.registry),
     toDocumentSection('Implementation Plan', input.bundle.implementationPlan),
     toDocumentSection('Architecture Plan', input.bundle.architecturePlan),
   ].join('\n\n');
@@ -286,10 +297,17 @@ export function generateOrchestrationPackageFromAdvancedBundle(input: {
       title,
       description,
       inputs: {
+        promptMd: input.bundle.prompt,
+        specMd: input.bundle.spec,
+        uiSpecMd: input.bundle.uiSpec,
+        registryMd: input.bundle.registry,
+        implementationPlanMd: input.bundle.implementationPlan,
+        architecturePlanMd: input.bundle.architecturePlan,
         specBundle: {
           spec: input.bundle.spec,
           uiSpec: input.bundle.uiSpec,
           prompt: input.bundle.prompt,
+          registry: input.bundle.registry,
           implementationPlan: input.bundle.implementationPlan,
           architecturePlan: input.bundle.architecturePlan,
         },

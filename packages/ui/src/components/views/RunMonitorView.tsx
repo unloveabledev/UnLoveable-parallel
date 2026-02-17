@@ -5,6 +5,8 @@ import { cn } from '@/lib/utils';
 import { useUIStore } from '@/stores/useUIStore';
 import { navigateToRoute } from '@/hooks/useRouter';
 import { toast } from '@/components/ui';
+import { AnimatedTabs } from '@/components/ui/animated-tabs';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import {
   orchestrateCancelRun,
   orchestrateGetRun,
@@ -78,6 +80,18 @@ export const RunMonitorView: React.FC = () => {
   const [selectedDetails, setSelectedDetails] = React.useState<{ title: string; value: unknown } | null>(null);
   const [livePreview, setLivePreview] = React.useState<OrchestratePreviewStatus | null>(null);
 
+  type MonitorTab =
+    | 'dashboard'
+    | 'timeline'
+    | 'orchestrator'
+    | 'swarm'
+    | 'gitSwarm'
+    | 'artifacts'
+    | 'preview'
+    | 'git';
+
+  const [activeTab, setActiveTab] = React.useState<MonitorTab>('dashboard');
+
   const loadRun = React.useCallback(async (id: string) => {
     const snapshot = await orchestrateGetRun(id);
     setRun(snapshot);
@@ -93,6 +107,7 @@ export const RunMonitorView: React.FC = () => {
       setRun(null);
       setEventsState(createRunEventState());
       setStreamStatus('idle');
+      setActiveTab('dashboard');
       return;
     }
 
@@ -138,6 +153,13 @@ export const RunMonitorView: React.FC = () => {
       unsubscribe();
     };
   }, [loadPreview, loadRun, runId]);
+
+  React.useEffect(() => {
+    // When preview becomes ready, automatically jump to the Preview tab once.
+    if (livePreview?.state === 'ready') {
+      setActiveTab((prev) => (prev === 'dashboard' ? 'preview' : prev));
+    }
+  }, [livePreview?.state]);
 
   React.useEffect(() => {
     if (!runId) return;
@@ -235,10 +257,43 @@ export const RunMonitorView: React.FC = () => {
         </div>
       </div>
 
+      <div className="border-b border-border px-3 py-2">
+        <AnimatedTabs<MonitorTab>
+          value={activeTab}
+          onValueChange={setActiveTab}
+          size="sm"
+          collapseLabelsOnSmall
+          collapseLabelsOnNarrow
+          tabs={[
+            { value: 'dashboard', label: 'Dashboard' },
+            { value: 'timeline', label: 'Timeline' },
+            { value: 'orchestrator', label: 'Orchestrator' },
+            { value: 'swarm', label: 'Swarm' },
+            { value: 'gitSwarm', label: 'Git Swarm' },
+            { value: 'artifacts', label: 'Artifacts' },
+            { value: 'preview', label: 'Preview' },
+            { value: 'git', label: 'Git' },
+          ]}
+        />
+      </div>
+
       <div className="flex-1 min-h-0 overflow-hidden">
-        <div className={cn('h-full grid gap-3 p-3', 'grid-cols-1 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]')}>
-          <div className="min-h-0 flex flex-col gap-3">
-            <Section title="Timeline" subtitle={`${eventsState.events.length} events`}>
+        <div className="h-full p-3">
+          {activeTab === 'dashboard' ? (
+            <Dashboard
+              runId={runId}
+              status={status}
+              streamStatus={streamStatus}
+              eventsCount={eventsState.events.length}
+              tasksCount={tasks.length}
+              artifactsCount={artifacts.length}
+              evidenceCount={evidence.length}
+              previewState={livePreview?.state ?? 'stopped'}
+            />
+          ) : null}
+
+          {activeTab === 'timeline' ? (
+            <Card title="Timeline" subtitle={`${eventsState.events.length} events`}>
               <ScrollableOverlay outerClassName="h-full" className="h-full">
                 <div className="space-y-1">
                   {eventsState.events.map((evt) => (
@@ -249,12 +304,7 @@ export const RunMonitorView: React.FC = () => {
                         'w-full text-left rounded-md border border-border px-2 py-1 transition-colors',
                         'bg-[var(--surface-elevated)] hover:bg-[var(--interactive-hover)]'
                       )}
-                      onClick={() => {
-                        setSelectedDetails({
-                          title: `${evt.type} (event ${evt.id})`,
-                          value: evt,
-                        });
-                      }}
+                      onClick={() => setSelectedDetails({ title: `${evt.type} (event ${evt.id})`, value: evt })}
                     >
                       <div className="flex items-center justify-between gap-2">
                         <div className="min-w-0 typography-micro text-foreground truncate">
@@ -264,42 +314,16 @@ export const RunMonitorView: React.FC = () => {
                       </div>
                     </button>
                   ))}
-                  {eventsState.events.length === 0 && (
+                  {eventsState.events.length === 0 ? (
                     <div className="typography-meta text-muted-foreground">Waiting for events…</div>
-                  )}
+                  ) : null}
                 </div>
               </ScrollableOverlay>
-            </Section>
+            </Card>
+          ) : null}
 
-            <Section title="Swarm" subtitle={`${tasks.length} tasks`}>
-              <ScrollableOverlay outerClassName="h-full" className="h-full">
-                <div className="space-y-1">
-                  {tasks.map((task, idx) => (
-                    <div key={idx} className="rounded-md border border-border bg-[var(--surface-elevated)] px-2 py-1">
-                      <div className="typography-micro text-foreground font-mono truncate">
-                        {String((task as Record<string, unknown>)?.taskId ?? 'task')} · {String((task as Record<string, unknown>)?.status ?? 'unknown')}
-                      </div>
-                    </div>
-                  ))}
-                  {tasks.length === 0 && (
-                    <div className="typography-meta text-muted-foreground">No tasks reported yet.</div>
-                  )}
-                </div>
-              </ScrollableOverlay>
-            </Section>
-
-            <Section title="Git Swarm" subtitle="Branches, commits, merges">
-              <ScrollableOverlay outerClassName="h-full" className="h-full">
-                <GitSwarmPanel
-                  events={eventsState.events}
-                  onSelect={(title, value) => setSelectedDetails({ title, value })}
-                />
-              </ScrollableOverlay>
-            </Section>
-          </div>
-
-          <div className="min-h-0 flex flex-col gap-3">
-            <Section title="Orchestrator" subtitle="PLAN → ACT → CHECK → FIX → REPORT">
+          {activeTab === 'orchestrator' ? (
+            <Card title="Orchestrator" subtitle="PLAN → ACT → CHECK → FIX → REPORT">
               <ScrollableOverlay outerClassName="h-full" className="h-full">
                 <div className="space-y-1">
                   {(['plan', 'act', 'check', 'fix', 'report'] as OrchestratorStage[]).map((stage) => {
@@ -312,8 +336,8 @@ export const RunMonitorView: React.FC = () => {
                       );
                     }
                     const output = getOrchestratorOutput(evt);
-                    const summary = (output && typeof output.summary === 'string') ? output.summary : null;
-                    const status = (output && typeof output.status === 'string') ? output.status : null;
+                    const summary = output && typeof output.summary === 'string' ? output.summary : null;
+                    const stageStatus = output && typeof output.status === 'string' ? output.status : null;
                     return (
                       <button
                         key={stage}
@@ -322,26 +346,56 @@ export const RunMonitorView: React.FC = () => {
                           'w-full text-left rounded-md border border-border px-2 py-1 transition-colors',
                           'bg-[var(--surface-elevated)] hover:bg-[var(--interactive-hover)]'
                         )}
-                        onClick={() => setSelectedDetails({
-                          title: `Orchestrator ${stage.toUpperCase()}`,
-                          value: output ?? evt,
-                        })}
+                        onClick={() => setSelectedDetails({ title: `Orchestrator ${stage.toUpperCase()}`, value: output ?? evt })}
                       >
                         <div className="flex items-center justify-between gap-2">
                           <div className="typography-micro text-foreground font-mono truncate">{stage.toUpperCase()}</div>
-                          <div className="typography-micro text-muted-foreground font-mono shrink-0">{status ?? 'completed'}</div>
+                          <div className="typography-micro text-muted-foreground font-mono shrink-0">{stageStatus ?? 'completed'}</div>
                         </div>
-                        {summary ? (
-                          <div className="typography-micro text-muted-foreground line-clamp-2">{summary}</div>
-                        ) : null}
+                        {summary ? <div className="typography-micro text-muted-foreground line-clamp-2">{summary}</div> : null}
                       </button>
                     );
                   })}
                 </div>
               </ScrollableOverlay>
-            </Section>
+            </Card>
+          ) : null}
 
-            <Section title="Artifacts" subtitle={`${artifacts.length} artifacts · ${evidence.length} evidence`}>
+          {activeTab === 'swarm' ? (
+            <Card title="Swarm" subtitle={`${tasks.length} tasks`}>
+              <ScrollableOverlay outerClassName="h-full" className="h-full">
+                <div className="space-y-1">
+                  {tasks.map((task, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      className={cn(
+                        'w-full text-left rounded-md border border-border px-2 py-1 transition-colors',
+                        'bg-[var(--surface-elevated)] hover:bg-[var(--interactive-hover)]'
+                      )}
+                      onClick={() => setSelectedDetails({ title: 'Task', value: task })}
+                    >
+                      <div className="typography-micro text-foreground font-mono truncate">
+                        {String((task as Record<string, unknown>)?.taskId ?? 'task')} · {String((task as Record<string, unknown>)?.status ?? 'unknown')}
+                      </div>
+                    </button>
+                  ))}
+                  {tasks.length === 0 ? <div className="typography-meta text-muted-foreground">No tasks yet.</div> : null}
+                </div>
+              </ScrollableOverlay>
+            </Card>
+          ) : null}
+
+          {activeTab === 'gitSwarm' ? (
+            <Card title="Git Swarm" subtitle="Branches, commits, merges">
+              <ScrollableOverlay outerClassName="h-full" className="h-full">
+                <GitSwarmPanel events={eventsState.events} onSelect={(title, value) => setSelectedDetails({ title, value })} />
+              </ScrollableOverlay>
+            </Card>
+          ) : null}
+
+          {activeTab === 'artifacts' ? (
+            <Card title="Artifacts" subtitle={`${artifacts.length} artifacts · ${evidence.length} evidence`}>
               <ScrollableOverlay outerClassName="h-full" className="h-full">
                 <div className="space-y-1">
                   {artifacts.map((artifact, idx) => {
@@ -357,13 +411,8 @@ export const RunMonitorView: React.FC = () => {
                           'bg-[var(--surface-elevated)] hover:bg-[var(--interactive-hover)]'
                         )}
                         onClick={() => {
-                          if (preview) {
-                            setPreviewUrl(preview);
-                          }
-                          setSelectedDetails({
-                            title: `Artifact ${(artifact as Record<string, unknown>).kind ?? 'artifact'}`,
-                            value: artifact,
-                          });
+                          if (preview) setPreviewUrl(preview);
+                          setSelectedDetails({ title: `Artifact ${(artifact as Record<string, unknown>).kind ?? 'artifact'}`, value: artifact });
                         }}
                       >
                         <div className="typography-micro text-foreground font-mono truncate">
@@ -372,14 +421,14 @@ export const RunMonitorView: React.FC = () => {
                       </button>
                     );
                   })}
-                  {artifacts.length === 0 && (
-                    <div className="typography-meta text-muted-foreground">No artifacts reported yet.</div>
-                  )}
+                  {artifacts.length === 0 ? <div className="typography-meta text-muted-foreground">No artifacts yet.</div> : null}
                 </div>
               </ScrollableOverlay>
-            </Section>
+            </Card>
+          ) : null}
 
-            <Section title="Preview" subtitle={livePreview?.state ? `state: ${livePreview.state}` : 'Not available'}>
+          {activeTab === 'preview' ? (
+            <Card title="Preview" subtitle={livePreview?.state ? `state: ${livePreview.state}` : 'Not available'}>
               <PreviewCard
                 runId={runId}
                 status={livePreview}
@@ -396,40 +445,11 @@ export const RunMonitorView: React.FC = () => {
                     .catch((error) => toast.error(error instanceof Error ? error.message : 'Failed to stop preview'));
                 }}
               />
-            </Section>
+            </Card>
+          ) : null}
 
-            <Section title="Details" subtitle={previewUrl ? previewUrl : selectedDetails ? selectedDetails.title : 'Select an item'}>
-              {previewUrl ? (
-                <div className="h-full flex flex-col gap-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="typography-micro text-muted-foreground font-mono truncate">{previewUrl}</div>
-                    <a
-                      href={previewUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="typography-micro text-foreground hover:underline"
-                    >
-                      Open
-                    </a>
-                  </div>
-                  <iframe
-                    title="artifact-preview"
-                    src={previewUrl}
-                    className="flex-1 min-h-0 w-full rounded-md border border-border bg-[var(--surface-elevated)]"
-                  />
-                </div>
-              ) : selectedDetails ? (
-                <pre className="h-full min-h-0 overflow-auto rounded-md border border-border bg-[var(--syntax-base-background)] p-2 text-xs text-[var(--syntax-base-foreground)]">
-                  {tryPrettyJson(selectedDetails.value)}
-                </pre>
-              ) : (
-                <div className="typography-meta text-muted-foreground">
-                  Click a timeline item, orchestrator stage, artifact, or diff evidence to view details.
-                </div>
-              )}
-            </Section>
-
-            <Section title="Git" subtitle="Diff-related evidence">
+          {activeTab === 'git' ? (
+            <Card title="Git" subtitle="Diff-related evidence">
               <ScrollableOverlay outerClassName="h-full" className="h-full">
                 <div className="space-y-1">
                   {evidence
@@ -442,37 +462,82 @@ export const RunMonitorView: React.FC = () => {
                           'w-full text-left rounded-md border border-border px-2 py-1 transition-colors',
                           'bg-[var(--surface-elevated)] hover:bg-[var(--interactive-hover)]'
                         )}
-                        onClick={() => setSelectedDetails({
-                          title: 'Diff evidence',
-                          value: item,
-                        })}
+                        onClick={() => setSelectedDetails({ title: 'Diff evidence', value: item })}
                       >
-                        <div className="typography-micro text-foreground font-mono truncate">
-                          {String((item as Record<string, unknown>).uri ?? '')}
-                        </div>
+                        <div className="typography-micro text-foreground font-mono truncate">{String((item as Record<string, unknown>).uri ?? '')}</div>
                       </button>
                     ))}
-                  {evidence.filter((item) => item && typeof item === 'object' && String((item as Record<string, unknown>).type ?? '') === 'diff').length === 0 && (
+                  {evidence.filter((item) => item && typeof item === 'object' && String((item as Record<string, unknown>).type ?? '') === 'diff').length === 0 ? (
                     <div className="typography-meta text-muted-foreground">No diff evidence yet.</div>
-                  )}
+                  ) : null}
                 </div>
               </ScrollableOverlay>
-            </Section>
-          </div>
+            </Card>
+          ) : null}
+        </div>
+      </div>
+
+      <Dialog open={Boolean(selectedDetails)} onOpenChange={(open) => { if (!open) setSelectedDetails(null); }}>
+        <DialogContent className="max-w-4xl max-h-[85vh] overflow-auto" keyboardAvoid>
+          <DialogHeader>
+            <DialogTitle>{selectedDetails?.title ?? 'Details'}</DialogTitle>
+            <DialogDescription>Event / artifact details (read-only).</DialogDescription>
+          </DialogHeader>
+          <pre className="whitespace-pre-wrap rounded-md border border-border bg-[var(--syntax-base-background)] p-3 text-xs text-[var(--syntax-base-foreground)]">
+            {tryPrettyJson(selectedDetails?.value)}
+          </pre>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+};
+
+const Card: React.FC<{ title: string; subtitle?: string; children: React.ReactNode }> = ({ title, subtitle, children }) => {
+  return (
+    <div className="h-full min-h-0 flex flex-col gap-2 rounded-md border border-border bg-[var(--surface-muted)] p-3">
+      <div className="flex items-baseline justify-between gap-2">
+        <div className="typography-ui-label font-semibold text-foreground">{title}</div>
+        {subtitle ? <div className="typography-micro text-muted-foreground font-mono truncate">{subtitle}</div> : null}
+      </div>
+      <div className="min-h-0 flex-1">{children}</div>
+    </div>
+  );
+};
+
+const Dashboard: React.FC<{
+  runId: string;
+  status: string;
+  streamStatus: string;
+  eventsCount: number;
+  tasksCount: number;
+  artifactsCount: number;
+  evidenceCount: number;
+  previewState: string;
+}> = ({ runId, status, streamStatus, eventsCount, tasksCount, artifactsCount, evidenceCount, previewState }) => {
+  return (
+    <div className="h-full min-h-0 grid gap-3 grid-cols-1 md:grid-cols-2">
+      <StatCard label="Run" value={runId} mono />
+      <StatCard label="Status" value={`${status} · SSE ${streamStatus}`} mono />
+      <StatCard label="Timeline" value={`${eventsCount} events`} />
+      <StatCard label="Swarm" value={`${tasksCount} tasks`} />
+      <StatCard label="Artifacts" value={`${artifactsCount} artifacts`} />
+      <StatCard label="Evidence" value={`${evidenceCount} evidence`} />
+      <StatCard label="Live Preview" value={previewState} mono />
+      <div className="rounded-md border border-border bg-[var(--surface-muted)] p-3">
+        <div className="typography-ui-label font-semibold text-foreground">What to look for</div>
+        <div className="typography-meta text-muted-foreground">
+          Open Timeline for events, Preview for the iframe/logs, Git Swarm for worktrees/merges.
         </div>
       </div>
     </div>
   );
 };
 
-const Section: React.FC<{ title: string; subtitle?: string; children: React.ReactNode }> = ({ title, subtitle, children }) => {
+const StatCard: React.FC<{ label: string; value: string; mono?: boolean }> = ({ label, value, mono }) => {
   return (
-    <div className="min-h-0 flex flex-col gap-2 rounded-md border border-border bg-[var(--surface-muted)] p-3">
-      <div className="flex items-baseline justify-between gap-2">
-        <div className="typography-ui-label font-semibold text-foreground">{title}</div>
-        {subtitle ? <div className="typography-micro text-muted-foreground font-mono truncate">{subtitle}</div> : null}
-      </div>
-      <div className="min-h-0 flex-1">{children}</div>
+    <div className="rounded-md border border-border bg-[var(--surface-muted)] p-3">
+      <div className="typography-micro text-muted-foreground">{label}</div>
+      <div className={cn('typography-ui-label text-foreground truncate', mono ? 'font-mono' : null)}>{value}</div>
     </div>
   );
 };

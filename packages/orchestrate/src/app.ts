@@ -1,6 +1,8 @@
 import express, { type Express, type Request, type Response } from 'express'
+import { randomUUID } from 'node:crypto'
 import type { OpenCodeAdapter } from './opencode-adapter.js'
 import { DeterministicMockOpenCodeAdapter } from './opencode-adapter.js'
+import { OpenCodeHttpAdapter } from './opencode-http-adapter.js'
 import { createDb, type OrchestrateDb } from './db.js'
 import { RunEngine } from './engine.js'
 import { Repository } from './repository.js'
@@ -8,6 +10,9 @@ import { SseHub } from './sse.js'
 import { validatePackage } from './validation.js'
 import { generateSpecBundle } from './spec.js'
 import { PreviewManager } from './preview.js'
+import { generateFollowups } from './followup.js'
+import { assistDocs } from './doc-assist.js'
+import type { RunRecord } from './types.js'
 
 export interface BuildAppOptions {
   databasePath?: string
@@ -31,7 +36,8 @@ export function buildApp(options: BuildAppOptions = {}): BuildAppResult {
   const db = createDb(databasePath)
   const repository = new Repository(db)
   const sseHub = new SseHub()
-  const adapter = options.adapter ?? new DeterministicMockOpenCodeAdapter()
+  const adapter = options.adapter ?? createDefaultAdapter()
+  const allowMockRuns = process.env.ORCHESTRATE_ALLOW_MOCK === 'true'
   const previewManager = new PreviewManager({
     onEvent(type, data) {
       const runId = typeof data.runId === 'string' ? data.runId : null
@@ -46,7 +52,7 @@ export function buildApp(options: BuildAppOptions = {}): BuildAppResult {
   const engine = new RunEngine(repository, sseHub, adapter, previewManager)
 
   app.get('/health', (_req: Request, res: Response) => {
-    res.status(200).json({ ok: true })
+    res.status(200).json({ ok: true, adapter: adapter.kind, allowMockRuns })
   })
 
   app.post('/spec', async (req: Request, res: Response) => {
@@ -65,8 +71,272 @@ export function buildApp(options: BuildAppOptions = {}): BuildAppResult {
       ? req.body.model.trim()
       : 'opencode/big-pickle'
 
-    const spec = await generateSpecBundle({ adapter, prompt, model })
-    res.status(200).json(spec)
+    const answers = req.body?.answers && typeof req.body.answers === 'object' ? (req.body.answers as Record<string, string>) : undefined
+    const context = req.body?.context && typeof req.body.context === 'object' ? (req.body.context as Record<string, unknown>) : undefined
+
+    try {
+      const spec = await generateSpecBundle({ adapter, prompt, model, answers, context })
+      res.status(200).json(spec)
+    } catch (error) {
+      res.status(500).json({
+        error: {
+          code: 'spec_generation_failed',
+          message: error instanceof Error ? error.message : 'Spec generation failed',
+        },
+      })
+    }
+  })
+
+  app.post('/spec/stream', async (req: Request, res: Response) => {
+    const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : ''
+    if (!prompt) {
+      res.status(400).json({ error: { code: 'invalid_request', message: 'Missing prompt' } })
+      return
+    }
+
+    const model = typeof req.body?.model === 'string' && req.body.model.trim().length > 0
+      ? req.body.model.trim()
+      : 'opencode/big-pickle'
+
+    const answers = req.body?.answers && typeof req.body.answers === 'object' ? (req.body.answers as Record<string, string>) : undefined
+    const context = req.body?.context && typeof req.body.context === 'object' ? (req.body.context as Record<string, unknown>) : undefined
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+    })
+
+    let eventId = 0
+    const sendEvent = (event: string, data: unknown) => {
+      eventId += 1
+      try {
+        res.write(`id: ${eventId}\n`)
+        res.write(`event: ${event}\n`)
+        res.write(`data: ${JSON.stringify(data)}\n\n`)
+      } catch {
+        // ignore
+      }
+    }
+
+    const heartbeat = setInterval(() => {
+      try {
+        res.write(': ping\n\n')
+      } catch {
+        // ignore
+      }
+    }, 15000)
+
+    req.on('close', () => {
+      clearInterval(heartbeat)
+      try {
+        res.end()
+      } catch {
+        // ignore
+      }
+    })
+
+    try {
+      sendEvent('spec.progress', { phase: 'start', message: 'Starting…', percent: 0 })
+      const spec = await generateSpecBundle({
+        adapter,
+        prompt,
+        model,
+        answers,
+        context,
+        onProgress: (evt) => sendEvent('spec.progress', evt),
+      })
+      sendEvent('spec.result', spec)
+    } catch (error) {
+      sendEvent('spec.error', {
+        code: 'spec_generation_failed',
+        message: error instanceof Error ? error.message : 'Spec generation failed',
+      })
+    } finally {
+      clearInterval(heartbeat)
+      try {
+        res.end()
+      } catch {
+        // ignore
+      }
+    }
+  })
+
+  app.post('/followup', async (req: Request, res: Response) => {
+    const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : ''
+    if (!prompt) {
+      res.status(400).json({ error: { code: 'invalid_request', message: 'Missing prompt' } })
+      return
+    }
+
+    const modelRaw = typeof req.body?.model === 'string' ? req.body.model.trim() : ''
+    const [providerID, modelID] = modelRaw.includes('/') ? modelRaw.split('/', 2) : ['opencode', 'big-pickle']
+
+    const context = req.body?.context && typeof req.body.context === 'object' ? (req.body.context as Record<string, unknown>) : undefined
+    const directory = typeof context?.directory === 'string' ? context.directory.trim() : null
+
+    // Minimal ephemeral run record for question generation.
+    const createdAt = new Date().toISOString()
+    const followupId = `followup_${randomUUID()}`
+    const run: RunRecord = {
+      id: followupId,
+      status: 'queued',
+      reason: null,
+      cancelRequested: false,
+      createdAt,
+      updatedAt: createdAt,
+      startedAt: null,
+      finishedAt: null,
+      sessionId: null,
+      budgetTokensUsed: 0,
+      budgetCostUsed: 0,
+      orchestrationPackage: {
+        packageVersion: '0.1.0',
+        metadata: { packageId: followupId, createdAt, createdBy: 'openchamber:auto' },
+        objective: {
+          title: 'Followup',
+          description: prompt,
+          inputs: {},
+          doneCriteria: [{ id: 'done_1', description: 'Questions gathered', requiredEvidenceTypes: ['log_excerpt'] }],
+        },
+        agents: {
+          orchestrator: { name: 'orchestrator', model: modelRaw || 'opencode/big-pickle', systemPromptRef: 'openchamber/orchestrator-system' },
+          worker: { name: 'worker', model: modelRaw || 'opencode/big-pickle', systemPromptRef: 'openchamber/worker-system' },
+        },
+        registries: { skills: [], variables: [] },
+        runPolicy: {
+          limits: { maxOrchestratorIterations: 1, maxWorkerIterations: 1, maxRunWallClockMs: 60_000 },
+          retries: { maxWorkerTaskRetries: 0, maxMalformedOutputRetries: 0 },
+          concurrency: { maxWorkers: 1 },
+          timeouts: { workerTaskMs: 30_000, orchestratorStepMs: 30_000 },
+          budget: { maxTokens: 50_000, maxCostUsd: 2 },
+          determinism: { enforceStageOrder: true, requireStrictJson: true, singleSessionPerRun: true },
+        },
+      },
+    }
+
+    try {
+      const result = await generateFollowups({
+        adapter,
+        run,
+        model: { providerID, modelID },
+        directory,
+        prompt,
+      })
+      res.status(200).json(result)
+    } catch (error) {
+      res.status(500).json({
+        error: {
+          code: 'followup_failed',
+          message: error instanceof Error ? error.message : 'Followup failed',
+        },
+      })
+    }
+  })
+
+  app.post('/doc-assist', async (req: Request, res: Response) => {
+    const instruction = typeof req.body?.instruction === 'string' ? req.body.instruction.trim() : ''
+    if (!instruction) {
+      res.status(400).json({ error: { code: 'invalid_request', message: 'Missing instruction' } })
+      return
+    }
+
+    const docs = req.body?.docs && typeof req.body.docs === 'object' ? (req.body.docs as Record<string, unknown>) : null
+    if (!docs) {
+      res.status(400).json({ error: { code: 'invalid_request', message: 'Missing docs' } })
+      return
+    }
+
+    const docStrings = {
+      promptMd: typeof docs.promptMd === 'string' ? docs.promptMd : '',
+      specMd: typeof docs.specMd === 'string' ? docs.specMd : '',
+      uiSpecMd: typeof docs.uiSpecMd === 'string' ? docs.uiSpecMd : '',
+      architecturePlanMd: typeof docs.architecturePlanMd === 'string' ? docs.architecturePlanMd : '',
+      registryMd: typeof docs.registryMd === 'string' ? docs.registryMd : '',
+      implementationPlanMd: typeof docs.implementationPlanMd === 'string' ? docs.implementationPlanMd : '',
+    }
+    const missing = Object.entries(docStrings)
+      .filter(([, v]) => String(v).trim().length === 0)
+      .map(([k]) => k)
+    if (missing.length > 0) {
+      res.status(400).json({
+        error: { code: 'invalid_request', message: `Missing docs fields: ${missing.join(', ')}` },
+      })
+      return
+    }
+
+    const modelRaw = typeof req.body?.model === 'string' ? req.body.model.trim() : ''
+    const [providerID, modelID] = modelRaw.includes('/') ? modelRaw.split('/', 2) : ['opencode', 'big-pickle']
+
+    const context = req.body?.context && typeof req.body.context === 'object' ? (req.body.context as Record<string, unknown>) : undefined
+    const directory = typeof context?.directory === 'string' ? context.directory.trim() : null
+
+    const createdAt = new Date().toISOString()
+    const assistId = `doc_assist_${randomUUID()}`
+    const run: RunRecord = {
+      id: assistId,
+      status: 'queued',
+      reason: null,
+      cancelRequested: false,
+      createdAt,
+      updatedAt: createdAt,
+      startedAt: null,
+      finishedAt: null,
+      sessionId: null,
+      budgetTokensUsed: 0,
+      budgetCostUsed: 0,
+      orchestrationPackage: {
+        packageVersion: '0.1.0',
+        metadata: { packageId: assistId, createdAt, createdBy: 'openchamber:auto' },
+        objective: {
+          title: 'Doc Assist',
+          description: instruction,
+          inputs: {},
+          doneCriteria: [{ id: 'done_1', description: 'Docs updated', requiredEvidenceTypes: ['log_excerpt'] }],
+        },
+        agents: {
+          orchestrator: { name: 'orchestrator', model: modelRaw || 'opencode/big-pickle', systemPromptRef: 'openchamber/orchestrator-system' },
+          worker: { name: 'worker', model: modelRaw || 'opencode/big-pickle', systemPromptRef: 'openchamber/worker-system' },
+        },
+        registries: { skills: [], variables: [] },
+        runPolicy: {
+          limits: { maxOrchestratorIterations: 1, maxWorkerIterations: 1, maxRunWallClockMs: 120_000 },
+          retries: { maxWorkerTaskRetries: 0, maxMalformedOutputRetries: 0 },
+          concurrency: { maxWorkers: 1 },
+          timeouts: { workerTaskMs: 60_000, orchestratorStepMs: 60_000 },
+          budget: { maxTokens: 100_000, maxCostUsd: 5 },
+          determinism: { enforceStageOrder: true, requireStrictJson: true, singleSessionPerRun: true },
+        },
+      },
+    }
+
+    try {
+      const result = await assistDocs({
+        adapter,
+        run,
+        request: {
+          instruction,
+          directory,
+          model: { providerID, modelID },
+          docs: {
+            promptMd: docStrings.promptMd,
+            specMd: docStrings.specMd,
+            uiSpecMd: docStrings.uiSpecMd,
+            architecturePlanMd: docStrings.architecturePlanMd,
+            registryMd: docStrings.registryMd,
+            implementationPlanMd: docStrings.implementationPlanMd,
+          },
+        },
+      })
+      res.status(200).json(result)
+    } catch (error) {
+      res.status(500).json({
+        error: {
+          code: 'doc_assist_failed',
+          message: error instanceof Error ? error.message : 'Doc assist failed',
+        },
+      })
+    }
   })
 
   app.post('/runs', (req: Request, res: Response) => {
@@ -77,6 +347,16 @@ export function buildApp(options: BuildAppOptions = {}): BuildAppResult {
           code: 'invalid_package',
           message: 'OrchestrationPackage validation failed',
           details: validation.errors,
+        },
+      })
+      return
+    }
+
+    if (adapter.kind === 'mock' && !allowMockRuns) {
+      res.status(409).json({
+        error: {
+          code: 'mock_adapter_disabled',
+          message: 'Orchestrate is running in mock mode; refusing to start runs because it will not touch your repo or run tests. Set ORCHESTRATE_ALLOW_MOCK=true to allow mock runs.',
         },
       })
       return
@@ -323,6 +603,22 @@ export function buildApp(options: BuildAppOptions = {}): BuildAppResult {
   })
 
   return { app, repository, engine, sseHub, previewManager, db }
+}
+
+function createDefaultAdapter() {
+  const baseUrl = (process.env.OPENCODE_URL || process.env.OPENCHAMBER_OPENCODE_URL || '').trim()
+  const password = (process.env.OPENCODE_SERVER_PASSWORD || '').trim()
+  const directory = (process.env.OPENCODE_DIRECTORY || '').trim()
+
+  if (baseUrl) {
+    return new OpenCodeHttpAdapter({
+      baseUrl,
+      serverPassword: password || null,
+      directory: directory || null,
+    })
+  }
+
+  return new DeterministicMockOpenCodeAdapter()
 }
 
 function serializeRun(run: ReturnType<Repository['getRunOrThrow']>) {

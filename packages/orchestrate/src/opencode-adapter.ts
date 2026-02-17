@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { AgentResult, AgentTask, LoopStage, OrchestratorOutput, RunRecord } from './types.js'
 
 export interface OpenCodeAdapter {
+  kind: 'mock' | 'opencode'
   createSession(run: RunRecord): Promise<{ sessionId: string }>
   cancelSession(sessionId: string): Promise<void>
   runOrchestratorStage(input: {
@@ -20,6 +21,7 @@ export interface OpenCodeAdapter {
 }
 
 export class DeterministicMockOpenCodeAdapter implements OpenCodeAdapter {
+  kind = 'mock' as const
   async createSession(run: RunRecord): Promise<{ sessionId: string }> {
     return { sessionId: `sess_${run.id}` }
   }

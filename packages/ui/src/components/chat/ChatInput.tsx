@@ -48,10 +48,12 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
-import { SimpleAutoDialog } from '@/components/orchestrate/SimpleAutoDialog';
+import { SimpleAutoQuestionsDialog } from '@/components/orchestrate/SimpleAutoQuestionsDialog';
 import { AdvancedAutoDialog } from '@/components/orchestrate/AdvancedAutoDialog';
 import { navigateToRoute } from '@/hooks/useRouter';
 import { OpenChamberLogo } from '@/components/ui/OpenChamberLogo';
+import { orchestrateGenerateFollowup, orchestrateGenerateSpec, type OrchestrateSpecQuestion } from '@/lib/orchestrate/specClient';
+import { orchestrateCreateRun } from '@/lib/orchestrate/client';
 
 const MAX_VISIBLE_TEXTAREA_LINES = 8;
 const EMPTY_QUEUE: QueuedMessage[] = [];
@@ -151,7 +153,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBo
     const sendTriggeredByPointerDownRef = React.useRef(false);
 
     const [interactionMode, setInteractionMode] = React.useState<ChatInteractionMode>(() => getStoredMode());
-    const [simpleAutoOpen, setSimpleAutoOpen] = React.useState(false);
+    const [simpleQuestionsOpen, setSimpleQuestionsOpen] = React.useState(false);
+    const [simpleQuestions, setSimpleQuestions] = React.useState<OrchestrateSpecQuestion[]>([]);
+    const [simplePrompt, setSimplePrompt] = React.useState<string>('');
+    const [simpleIsSubmitting, setSimpleIsSubmitting] = React.useState(false);
     const [advancedAutoOpen, setAdvancedAutoOpen] = React.useState(false);
 
     const persistInteractionMode = React.useCallback((mode: ChatInteractionMode) => {
@@ -724,7 +729,39 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBo
                 setAdvancedAutoOpen(true);
                 return;
             }
-            setSimpleAutoOpen(true);
+            const prompt = message.trim();
+            if (!prompt) {
+                toast.error('Type a prompt to start Simple Auto.');
+                return;
+            }
+
+            // Simple Auto: generate spec and start run automatically.
+            setSimpleIsSubmitting(true);
+            void orchestrateGenerateFollowup({ prompt, model: orchestrateModel, context: { directory: currentDirectory } })
+                .then(async (followup) => {
+                    const questions = Array.isArray(followup.questions) ? followup.questions : [];
+                    const required = questions.filter((q) => q && q.optional !== true);
+                    if (required.length > 0) {
+                        setSimplePrompt(prompt);
+                        setSimpleQuestions(questions);
+                        setSimpleQuestionsOpen(true);
+                        return;
+                    }
+
+                    const spec = await orchestrateGenerateSpec({ prompt, model: orchestrateModel, context: { directory: currentDirectory } });
+                    const created = await orchestrateCreateRun(spec.orchestrationPackage);
+                    setMessage('');
+                    useUIStore.getState().setActiveRunId(created.id);
+                    useUIStore.getState().setActiveMainTab('runs');
+                    navigateToRoute({ tab: 'runs', runId: created.id });
+                    scrollToBottom?.({ instant: true, force: true });
+                })
+                .catch((error) => {
+                    toast.error(error instanceof Error ? error.message : 'Failed to start Simple Auto');
+                })
+                .finally(() => {
+                    setSimpleIsSubmitting(false);
+                });
             return;
         }
         const canQueue = hasContent && currentSessionId && sessionPhase !== 'idle';
@@ -733,7 +770,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBo
         } else {
             void handleSubmitRef.current();
         }
-    }, [interactionMode, isOrchestrateConfigured, hasContent, currentSessionId, sessionPhase, queueModeEnabled, handleQueueMessage]);
+    }, [interactionMode, isOrchestrateConfigured, message, orchestrateModel, currentDirectory, hasContent, currentSessionId, sessionPhase, queueModeEnabled, handleQueueMessage, scrollToBottom]);
 
     // Auto-send queued messages when session becomes idle (but not after abort)
     React.useEffect(() => {
@@ -857,6 +894,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBo
         // Handle Enter/Ctrl+Enter based on queue mode
         if (e.key === 'Enter' && !e.shiftKey && !isMobile) {
             e.preventDefault();
+
+            // Auto modes: always route keyboard send through the primary action
+            // so we open the auto dialogs instead of sending a prompt.
+            if (interactionMode !== 'prompt') {
+                handlePrimaryAction();
+                return;
+            }
 
             const isCtrlEnter = e.ctrlKey || e.metaKey;
 
@@ -2009,17 +2053,36 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBo
             data-keyboard-avoid="true"
             style={isMobile && inputBarOffset > 0 && !isKeyboardOpen ? { marginBottom: `${inputBarOffset}px` } : undefined}
         >
-            <SimpleAutoDialog
-                open={simpleAutoOpen}
-                onOpenChange={setSimpleAutoOpen}
-                defaultGoalText={message}
-                model={orchestrateModel}
-                previewCwd={currentDirectory}
-                onCreatedRun={(id) => {
-                    useUIStore.getState().setActiveRunId(id);
-                    useUIStore.getState().setActiveMainTab('runs');
-                    navigateToRoute({ tab: 'runs', runId: id });
-                    scrollToBottom?.({ instant: true, force: true });
+            <SimpleAutoQuestionsDialog
+                open={simpleQuestionsOpen}
+                onOpenChange={setSimpleQuestionsOpen}
+                questions={simpleQuestions}
+                isSubmitting={simpleIsSubmitting}
+                onSubmit={(answers) => {
+                    const prompt = simplePrompt.trim();
+                    if (!prompt) {
+                        toast.error('Missing prompt');
+                        return;
+                    }
+                    setSimpleIsSubmitting(true);
+                    void orchestrateGenerateSpec({ prompt, model: orchestrateModel, answers, context: { directory: currentDirectory } })
+                        .then(async (spec) => {
+                            const created = await orchestrateCreateRun(spec.orchestrationPackage);
+                            setSimpleQuestionsOpen(false);
+                            setSimpleQuestions([]);
+                            setSimplePrompt('');
+                            setMessage('');
+                            useUIStore.getState().setActiveRunId(created.id);
+                            useUIStore.getState().setActiveMainTab('runs');
+                            navigateToRoute({ tab: 'runs', runId: created.id });
+                            scrollToBottom?.({ instant: true, force: true });
+                        })
+                        .catch((error) => {
+                            toast.error(error instanceof Error ? error.message : 'Failed to start Simple Auto');
+                        })
+                        .finally(() => {
+                            setSimpleIsSubmitting(false);
+                        });
                 }}
             />
             <AdvancedAutoDialog

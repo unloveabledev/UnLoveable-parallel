@@ -6,6 +6,19 @@ import { SEMANTIC_TYPOGRAPHY, getTypographyVariable, type SemanticTypographyKey 
 
 export type MainTab = 'chat' | 'plan' | 'git' | 'diff' | 'terminal' | 'files' | 'runs';
 
+export type RightSidebarTab = 'git' | 'files';
+
+export type ContextPanelMode = 'diff' | 'file';
+
+export type ContextPanelDirectoryState = {
+  isOpen: boolean;
+  expanded: boolean;
+  mode: ContextPanelMode | null;
+  targetPath: string | null;
+  width: number;
+  touchedAt: number;
+};
+
 export type MainTabGuard = (nextTab: MainTab) => boolean;
 export type EventStreamStatus =
   | 'idle'

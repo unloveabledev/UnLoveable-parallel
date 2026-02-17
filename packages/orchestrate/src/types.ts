@@ -109,6 +109,7 @@ export interface OrchestrationPackage {
   // Optional: live preview server management for UI embedding.
   preview?: {
     enabled?: boolean
+    required?: boolean
     command?: string
     args?: string[]
     cwd?: string

@@ -3705,6 +3705,25 @@ function parseSseDataPayload(block) {
 }
 
 async function getOrchestrateConnectionSettings() {
+  const envBaseUrl = normalizeOrchestrateBaseUrl(
+    process.env.ORCHESTRATE_URL ||
+      process.env.OPENCHAMBER_ORCHESTRATE_URL ||
+      process.env.UNLOVEABLE_ORCHESTRATE_URL
+  );
+  const envTokenRaw =
+    process.env.ORCHESTRATE_TOKEN ||
+    process.env.OPENCHAMBER_ORCHESTRATE_TOKEN ||
+    process.env.UNLOVEABLE_ORCHESTRATE_TOKEN ||
+    '';
+  const envToken = typeof envTokenRaw === 'string' ? envTokenRaw.trim() : '';
+
+  if (envBaseUrl) {
+    return {
+      baseUrl: envBaseUrl,
+      token: envToken.length > 0 ? envToken : null,
+    };
+  }
+
   const settings = await readSettingsFromDiskMigrated();
   const baseUrl = normalizeOrchestrateBaseUrl(settings?.orchestrateBaseUrl);
   const token = typeof settings?.orchestrateToken === 'string' ? settings.orchestrateToken.trim() : '';
@@ -3774,11 +3793,11 @@ async function enrichOrchestrateRunCreateBody(body) {
     let resolved = null;
 
     if (preferredId === 'global') {
-      const gitService = await import('./lib/git-service.js');
-      resolved = await gitService.getGlobalIdentity();
+      const { getGlobalIdentity } = await import('./lib/git/index.js');
+      resolved = await getGlobalIdentity();
     } else if (preferredId) {
-      const storage = await import('./lib/git-identity-storage.js');
-      const profile = storage.getProfile(preferredId);
+      const { getProfile } = await import('./lib/git/index.js');
+      const profile = getProfile(preferredId);
       if (profile) {
         resolved = {
           userName: profile.userName || null,
@@ -3789,11 +3808,21 @@ async function enrichOrchestrateRunCreateBody(body) {
     }
 
     if (!resolved) {
-      const gitService = await import('./lib/git-service.js');
-      resolved = await gitService.getCurrentIdentity(repoPath);
+      const { getCurrentIdentity } = await import('./lib/git/index.js');
+      resolved = await getCurrentIdentity(repoPath);
     }
 
     if (!resolved) {
+      return body;
+    }
+
+    const identity = {
+      ...(typeof resolved.userName === 'string' && resolved.userName.length > 0 ? { userName: resolved.userName } : {}),
+      ...(typeof resolved.userEmail === 'string' && resolved.userEmail.length > 0 ? { userEmail: resolved.userEmail } : {}),
+      ...(typeof resolved.sshCommand === 'string' && resolved.sshCommand.length > 0 ? { sshCommand: resolved.sshCommand } : {}),
+    };
+
+    if (Object.keys(identity).length === 0) {
       return body;
     }
 
@@ -3802,15 +3831,54 @@ async function enrichOrchestrateRunCreateBody(body) {
       git: {
         ...git,
         identity: {
-          userName: resolved.userName || null,
-          userEmail: resolved.userEmail || null,
-          sshCommand: resolved.sshCommand || null,
+          ...identity,
         },
       },
     };
   } catch {
     return body;
   }
+}
+
+function sanitizeOrchestrateRunCreateBody(body) {
+  if (!body || typeof body !== 'object') {
+    return body;
+  }
+
+  const git = body.git;
+  if (!git || typeof git !== 'object') {
+    return body;
+  }
+
+  const identity = git.identity;
+  if (!identity || typeof identity !== 'object') {
+    return body;
+  }
+
+  const nextIdentity = { ...identity };
+  if (typeof nextIdentity.userName !== 'string' || nextIdentity.userName.trim().length === 0) {
+    delete nextIdentity.userName;
+  }
+  if (typeof nextIdentity.userEmail !== 'string' || nextIdentity.userEmail.trim().length === 0) {
+    delete nextIdentity.userEmail;
+  }
+  if (typeof nextIdentity.sshCommand !== 'string' || nextIdentity.sshCommand.trim().length === 0) {
+    delete nextIdentity.sshCommand;
+  }
+
+  if (Object.keys(nextIdentity).length === 0) {
+    const nextGit = { ...git };
+    delete nextGit.identity;
+    return { ...body, git: nextGit };
+  }
+
+  return {
+    ...body,
+    git: {
+      ...git,
+      identity: nextIdentity,
+    },
+  };
 }
 
 function buildSshCommandSafe(sshKeyPath) {
@@ -4024,6 +4092,50 @@ const extractSessionIdFromPayload = (payload) => {
     props?.session ??
     null;
   return typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : null;
+};
+
+// OpenCode emits `session.status` events on the global SSE stream.
+// Keep this extraction tolerant to shape changes.
+const extractSessionStatusUpdate = (payload) => {
+  if (!payload || typeof payload !== 'object') {
+    return null;
+  }
+  if (payload.type !== 'session.status') {
+    return null;
+  }
+
+  const props = payload.properties && typeof payload.properties === 'object' ? payload.properties : {};
+  const sessionId =
+    (typeof props.sessionId === 'string' && props.sessionId) ||
+    (typeof props.sessionID === 'string' && props.sessionID) ||
+    (typeof props.session === 'string' && props.session) ||
+    null;
+
+  const status = typeof props.status === 'string' ? props.status : (typeof props.type === 'string' ? props.type : null);
+  const normalized = status === 'busy' || status === 'idle' || status === 'retry' ? status : null;
+
+  if (!sessionId || !normalized) {
+    return null;
+  }
+
+  const eventId =
+    (typeof props.eventId === 'string' && props.eventId) ||
+    (typeof props.id === 'string' && props.id) ||
+    (typeof payload.id === 'string' && payload.id) ||
+    null;
+
+  const attempt = Number.isFinite(props.attempt) ? props.attempt : undefined;
+  const message = typeof props.message === 'string' ? props.message : undefined;
+  const next = Number.isFinite(props.next) ? props.next : undefined;
+
+  return {
+    sessionId,
+    type: normalized,
+    eventId,
+    attempt,
+    message,
+    next,
+  };
 };
 
 const maybeSendPushForTrigger = async (payload) => {
@@ -5440,6 +5552,7 @@ async function main(options = {}) {
       req.path.startsWith('/api/config/skills') ||
       req.path.startsWith('/api/fs') ||
       req.path.startsWith('/api/git') ||
+      req.path.startsWith('/api/orchestrate') ||
       req.path.startsWith('/api/prompts') ||
       req.path.startsWith('/api/terminal') ||
       req.path.startsWith('/api/opencode') ||
@@ -6557,7 +6670,8 @@ async function main(options = {}) {
         return sendOrchestrateNotConfigured(res);
       }
 
-      const body = await enrichOrchestrateRunCreateBody(req.body ?? {});
+      const enriched = await enrichOrchestrateRunCreateBody(req.body ?? {});
+      const body = sanitizeOrchestrateRunCreateBody(enriched);
       const url = buildOrchestrateUrl(baseUrl, '/runs');
       const { response, json, text } = await fetchOrchestrateJson(url, {
         method: 'POST',
@@ -6606,6 +6720,189 @@ async function main(options = {}) {
       return res.status(response.status).json(json ?? {});
     } catch (error) {
       console.warn('[orchestrate] spec proxy failed:', error);
+      return res.status(502).json({
+        error: {
+          code: 'orchestrate_unreachable',
+          message: error instanceof Error ? error.message : 'Failed to reach Orchestrate'
+        }
+      });
+    }
+  });
+
+  app.post('/api/orchestrate/spec/stream', async (req, res) => {
+    let upstreamResponse = null;
+    let controller = null;
+    let heartbeatInterval = null;
+
+    try {
+      const { baseUrl, token } = await getOrchestrateConnectionSettings();
+      if (!baseUrl) {
+        return sendOrchestrateNotConfigured(res);
+      }
+
+      const url = buildOrchestrateUrl(baseUrl, '/spec/stream');
+
+      controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), ORCHESTRATE_CONNECT_TIMEOUT_MS);
+
+      upstreamResponse = await fetch(url, {
+        method: 'POST',
+        headers: {
+          ...buildOrchestrateHeaders(token, req, true),
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+        },
+        body: JSON.stringify(req.body ?? {}),
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timeoutId));
+
+      if (!upstreamResponse.ok || !upstreamResponse.body) {
+        const text = await upstreamResponse.text().catch(() => '');
+        let json = null;
+        try {
+          json = text ? JSON.parse(text) : null;
+        } catch {
+          json = null;
+        }
+        return res.status(upstreamResponse.status).json(json ?? { error: { code: 'orchestrate_error', message: text || upstreamResponse.statusText } });
+      }
+
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+      });
+
+      const cleanup = () => {
+        try {
+          controller?.abort();
+        } catch {
+          // ignore
+        }
+        if (heartbeatInterval) {
+          clearInterval(heartbeatInterval);
+          heartbeatInterval = null;
+        }
+      };
+
+      req.on('close', () => {
+        cleanup();
+        try {
+          res.end();
+        } catch {
+          // ignore
+        }
+      });
+
+      heartbeatInterval = setInterval(() => {
+        try {
+          res.write(': ping\n\n');
+        } catch {
+          // ignore
+        }
+      }, 15000);
+
+      const reader = upstreamResponse.body.getReader();
+      const decoder = new TextDecoder();
+
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value, { stream: true });
+          try {
+            res.write(chunk);
+          } catch {
+            // ignore
+          }
+        }
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          console.warn('[orchestrate] spec stream proxy error:', error);
+        }
+      } finally {
+        cleanup();
+        try {
+          res.end();
+        } catch {
+          // ignore
+        }
+      }
+    } catch (error) {
+      console.warn('[orchestrate] spec stream proxy failed:', error);
+      try {
+        res.status(502).json({
+          error: {
+            code: 'orchestrate_unreachable',
+            message: error instanceof Error ? error.message : 'Failed to reach Orchestrate'
+          }
+        });
+      } catch {
+        // ignore
+      }
+      try {
+        controller?.abort();
+      } catch {
+        // ignore
+      }
+    }
+  });
+
+  app.post('/api/orchestrate/followup', async (req, res) => {
+    try {
+      const { baseUrl, token } = await getOrchestrateConnectionSettings();
+      if (!baseUrl) {
+        return sendOrchestrateNotConfigured(res);
+      }
+
+      const url = buildOrchestrateUrl(baseUrl, '/followup');
+      const { response, json, text } = await fetchOrchestrateJson(url, {
+        method: 'POST',
+        headers: {
+          ...buildOrchestrateHeaders(token, req),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(req.body ?? {}),
+        timeoutMs: LONG_REQUEST_TIMEOUT_MS,
+      });
+      if (!response.ok) {
+        return res.status(response.status).json(json ?? { error: { code: 'orchestrate_error', message: text || response.statusText } });
+      }
+      return res.status(response.status).json(json ?? {});
+    } catch (error) {
+      console.warn('[orchestrate] followup proxy failed:', error);
+      return res.status(502).json({
+        error: {
+          code: 'orchestrate_unreachable',
+          message: error instanceof Error ? error.message : 'Failed to reach Orchestrate'
+        }
+      });
+    }
+  });
+
+  app.post('/api/orchestrate/doc-assist', async (req, res) => {
+    try {
+      const { baseUrl, token } = await getOrchestrateConnectionSettings();
+      if (!baseUrl) {
+        return sendOrchestrateNotConfigured(res);
+      }
+
+      const url = buildOrchestrateUrl(baseUrl, '/doc-assist');
+      const { response, json, text } = await fetchOrchestrateJson(url, {
+        method: 'POST',
+        headers: {
+          ...buildOrchestrateHeaders(token, req),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(req.body ?? {}),
+        timeoutMs: LONG_REQUEST_TIMEOUT_MS,
+      });
+      if (!response.ok) {
+        return res.status(response.status).json(json ?? { error: { code: 'orchestrate_error', message: text || response.statusText } });
+      }
+      return res.status(response.status).json(json ?? {});
+    } catch (error) {
+      console.warn('[orchestrate] doc-assist proxy failed:', error);
       return res.status(502).json({
         error: {
           code: 'orchestrate_unreachable',
@@ -9414,7 +9711,8 @@ async function main(options = {}) {
   app.get('/api/git/check', async (req, res) => {
     const { isGitRepository } = await getGitLibraries();
     try {
-      const directory = req.query.directory;
+      const rawDirectory = Array.isArray(req.query?.directory) ? req.query.directory[0] : req.query?.directory;
+      const directory = typeof rawDirectory === 'string' ? rawDirectory : '';
       if (!directory) {
         return res.status(400).json({ error: 'directory parameter is required' });
       }
@@ -9521,11 +9819,31 @@ async function main(options = {}) {
   });
 
   app.get('/api/git/status', async (req, res) => {
-    const { getStatus } = await getGitLibraries();
+    const { getStatus, isGitRepository } = await getGitLibraries();
     try {
       const directory = req.query.directory;
       if (!directory) {
         return res.status(400).json({ error: 'directory parameter is required' });
+      }
+
+      const isRepo = await isGitRepository(directory);
+      if (!isRepo) {
+        return res.json({
+          isRepo: false,
+          directory,
+          files: [],
+          created: [],
+          deleted: [],
+          modified: [],
+          renamed: [],
+          not_added: [],
+          conflicted: [],
+          staged: [],
+          ahead: 0,
+          behind: 0,
+          current: null,
+          tracking: null,
+        });
       }
 
       const status = await getStatus(directory);
@@ -9897,11 +10215,17 @@ Context:
   });
 
   app.get('/api/git/remotes', async (req, res) => {
-    const { getRemotes } = await getGitLibraries();
+    const { getRemotes, isGitRepository } = await getGitLibraries();
     try {
-      const directory = req.query.directory;
+      const rawDirectory = Array.isArray(req.query?.directory) ? req.query.directory[0] : req.query?.directory;
+      const directory = typeof rawDirectory === 'string' ? rawDirectory : '';
       if (!directory) {
         return res.status(400).json({ error: 'directory parameter is required' });
+      }
+
+      const isRepo = await isGitRepository(directory);
+      if (!isRepo) {
+        return res.json([]);
       }
 
       const remotes = await getRemotes(directory);

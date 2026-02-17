@@ -22,6 +22,7 @@
   "license": "MIT",
   "scripts": {
     "dev": "concurrently -n \"server,web,ui\" -c \"cyan,magenta,yellow\" \"bun run --cwd packages/web dev:server:watch\" \"bun run --cwd packages/web build:watch\" \"bun run --cwd packages/ui dev\"",
+    "dev:unloveable": "cross-env OPENCHAMBER_PORT=3001 OPENCODE_PORT=4096 ORCHESTRATE_PORT=8787 OPENCHAMBER_ORCHESTRATE_URL=http://127.0.0.1:8787 OPENCODE_URL=http://127.0.0.1:4096 concurrently -n \"orchestrate,server,web,ui\" -c \"green,cyan,magenta,yellow\" \"bun run --cwd packages/orchestrate dev\" \"bun run --cwd packages/web dev:server:watch\" \"bun run --cwd packages/web build:watch\" \"bun run --cwd packages/ui dev\"",
     "build": "bun run --filter '*' build",
     "build:web": "bun run --cwd packages/web build",
     "build:ui": "bun run --cwd packages/ui build",

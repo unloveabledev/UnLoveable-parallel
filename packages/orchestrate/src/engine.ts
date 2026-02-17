@@ -9,8 +9,8 @@ import { validateOrchestratorOutput, validateResult, validateTask } from './vali
 import type { PreviewManager, PreviewConfig } from './preview.js'
 import path from 'node:path'
 import os from 'node:os'
-import fs from 'node:fs'
 import { GitManager } from './git-manager.js'
+import { validateTaskIdsAgainstImplementationPlan } from './implementation-plan.js'
 
 const workerStages: LoopStage[] = ['plan', 'act', 'check', 'report']
 
@@ -115,6 +115,25 @@ export class RunEngine {
           await this.maybeStopPreview(run)
           await this.maybeCleanupGit(run)
           return
+        }
+
+        // Guard against false positives: if a run requires live preview, do not
+        // report success unless the preview reached ready state.
+        const preview = run.orchestrationPackage.preview
+        if (preview?.enabled === true && preview?.required === true && this.previewManager) {
+          const status = this.previewManager.get(runId)
+          if (status.state !== 'ready') {
+            this.emit(runId, 'run.warning', {
+              runId,
+              code: 'preview_required_not_ready',
+              preview: status,
+            })
+            run = this.repository.updateRunStatus(runId, 'failed', 'preview_failed')
+            this.emit(runId, 'run.failed', { runId, reason: run.reason })
+            await this.maybeStopPreview(run)
+            await this.maybeCleanupGit(run)
+            return
+          }
         }
 
         run = this.repository.updateRunStatus(runId, 'succeeded', null)
@@ -300,15 +319,32 @@ export class RunEngine {
   ) {
     const maxMalformedRetries = run.orchestrationPackage.runPolicy.retries.maxMalformedOutputRetries
     let validationError: unknown = null
+    let validationFeedback: string | null = null
     for (let malformedAttempt = 1; malformedAttempt <= maxMalformedRetries + 1; malformedAttempt += 1) {
+      const runForAttempt = validationFeedback ? this.withOrchestratorValidationFeedback(run, validationFeedback) : run
       const output = await this.withTimeout(
-        this.adapter.runOrchestratorStage({ run, stage, iteration, workerResults }),
+        this.adapter.runOrchestratorStage({ run: runForAttempt, stage, iteration, workerResults }),
         run.orchestrationPackage.runPolicy.timeouts.orchestratorStepMs,
         'orchestrator_timeout',
       )
 
       const validation = validateOrchestratorOutput(output)
       if (validation.ok && validation.value) {
+        const planValidation = this.validateOrchestratorTaskIds(run, stage, validation.value)
+        if (!planValidation.ok) {
+          validationError = planValidation.errors
+          validationFeedback = planValidation.errors.map((e) => `- ${e.path}: ${e.message}`).join('\n')
+          this.emit(run.id, 'agent.output.invalid', {
+            runId: run.id,
+            actor: 'orchestrator',
+            stage,
+            malformedAttempt,
+            errors: planValidation.errors,
+          })
+          continue
+        }
+
+        validationFeedback = null
         this.repository.updateBudgetUsage(
           run.id,
           Math.ceil(validation.value.metrics.estimatedTokens),
@@ -319,6 +355,7 @@ export class RunEngine {
       }
 
       validationError = validation.errors
+      validationFeedback = validation.errors.map((e) => `- ${e.path}: ${e.message}`).join('\n')
       this.emit(run.id, 'agent.output.invalid', {
         runId: run.id,
         actor: 'orchestrator',
@@ -329,6 +366,49 @@ export class RunEngine {
     }
 
     throw new PolicyError('orchestrator_output_invalid', `orchestrator output was invalid: ${JSON.stringify(validationError)}`)
+  }
+
+  private withOrchestratorValidationFeedback(run: RunRecord, feedback: string): RunRecord {
+    const objective = run.orchestrationPackage.objective
+    const inputs = objective.inputs && typeof objective.inputs === 'object' ? (objective.inputs as Record<string, unknown>) : {}
+    const nextInputs = { ...inputs, orchestratorValidationErrors: feedback }
+    return {
+      ...run,
+      orchestrationPackage: {
+        ...run.orchestrationPackage,
+        objective: {
+          ...objective,
+          inputs: nextInputs,
+        },
+      },
+    }
+  }
+
+  private validateOrchestratorTaskIds(
+    run: RunRecord,
+    stage: LoopStage,
+    output: { plan?: { tasks: Array<{ taskId: string }> } | undefined; workerDispatch?: Array<{ taskId: string }> | undefined },
+  ): { ok: true } | { ok: false; errors: Array<{ path: string; message: string }> } {
+    if (stage !== 'plan' && stage !== 'act') {
+      return { ok: true }
+    }
+
+    const inputs = run.orchestrationPackage.objective.inputs
+    if (!inputs || typeof inputs !== 'object') {
+      return { ok: true }
+    }
+    const implementationPlanMd = (inputs as Record<string, unknown>).implementationPlanMd
+    if (typeof implementationPlanMd !== 'string' || implementationPlanMd.trim().length === 0) {
+      return { ok: true }
+    }
+
+    if (stage === 'plan') {
+      const taskIds = Array.isArray(output.plan?.tasks) ? output.plan?.tasks.map((t) => t.taskId) : []
+      return validateTaskIdsAgainstImplementationPlan({ implementationPlanMd, stage: 'plan', taskIds })
+    }
+
+    const taskIds = Array.isArray(output.workerDispatch) ? output.workerDispatch.map((d) => d.taskId) : []
+    return validateTaskIdsAgainstImplementationPlan({ implementationPlanMd, stage: 'act', taskIds })
   }
 
   private async runWorkerStageValidated(input: {
@@ -537,19 +617,17 @@ export class RunEngine {
             if (gitManager) {
               try {
                 const lane = await gitManager.ensureAgentWorktree(agentId)
-                // MVP: write a small marker file so the lane always has a commit.
-                const markerPath = path.join(lane.path, '.orchestrate', 'tasks', `${task.taskId}.md`)
-                await fs.promises.mkdir(path.dirname(markerPath), { recursive: true })
-                await fs.promises.writeFile(
-                  markerPath,
-                  `# ${task.taskId}\n\n${latestResult.summary}\n`,
-                  'utf8',
-                )
-
                 const commitMessage = `worker(${task.taskId}): complete task`
                 const commit = await gitManager.commitAll(agentId, commitMessage)
                 if (commit) {
                   gitManager.enqueueMerge(lane.branch, gitManager.getIntegrationBranch(), agentId)
+                } else {
+                  this.emit(run.id, 'git.commit.skipped', {
+                    runId: run.id,
+                    agentId,
+                    branch: lane.branch,
+                    reason: 'no_changes',
+                  })
                 }
               } catch (error) {
                 this.emit(run.id, 'git.error', {

@@ -1,11 +1,12 @@
 import * as React from 'react';
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { CodeMirrorEditor } from '@/components/ui/CodeMirrorEditor';
 import { toast } from '@/components/ui';
+import { AnimatedTabs } from '@/components/ui/animated-tabs';
 import { orchestrateCreateRun } from '@/lib/orchestrate/client';
-import { orchestrateGenerateSpec } from '@/lib/orchestrate/specClient';
+import { orchestrateDocAssist, orchestrateGenerateSpecStream, type OrchestrateSpecProgressEvent } from '@/lib/orchestrate/specClient';
 import {
   generateOrchestrationPackageFromAdvancedBundle,
   seedAdvancedBundle,
@@ -14,7 +15,6 @@ import {
 import { useThemeSystem } from '@/contexts/useThemeSystem';
 import { createFlexokiCodeMirrorTheme } from '@/lib/codemirror/flexokiTheme';
 import { languageByExtension } from '@/lib/codemirror/languageByExtension';
-import { EditorView } from '@codemirror/view';
 import type { Extension } from '@codemirror/state';
 
 type BundleKey = keyof AutoAdvancedBundle;
@@ -44,6 +44,12 @@ const BUNDLE_TABS: BundleTab[] = [
     label: 'Prompt',
     description: 'Prompt guidance and constraints for orchestration.',
     pseudoPath: 'prompt.md',
+  },
+  {
+    key: 'registry',
+    label: 'Registry',
+    description: 'Variables/functions registry for consistent naming and interfaces.',
+    pseudoPath: 'registry.md',
   },
   {
     key: 'implementationPlan',
@@ -91,27 +97,25 @@ export const AdvancedAutoDialog: React.FC<AdvancedAutoDialogProps> = ({
   const { currentTheme } = useThemeSystem();
   const [bundle, setBundle] = React.useState<AutoAdvancedBundle>(() => createInitialBundle(defaultGoalText));
   const [activeTab, setActiveTab] = React.useState<BundleKey>('spec');
-  const [pkgJson, setPkgJson] = React.useState('');
   const [lastGeneratedAt, setLastGeneratedAt] = React.useState<string | null>(null);
-  const [draftRevision, setDraftRevision] = React.useState(0);
-  const [generatedRevision, setGeneratedRevision] = React.useState(-1);
   const [isApproved, setIsApproved] = React.useState(false);
   const [isCreating, setIsCreating] = React.useState(false);
   const [isGenerating, setIsGenerating] = React.useState(false);
+  const [assistantBusy, setAssistantBusy] = React.useState(false);
+  const [assistantInput, setAssistantInput] = React.useState('');
+  const [assistantMessages, setAssistantMessages] = React.useState<Array<{ id: string; role: 'user' | 'assistant'; text: string }>>([]);
+  const [specProgress, setSpecProgress] = React.useState<OrchestrateSpecProgressEvent | null>(null);
+  const [specProgressLog, setSpecProgressLog] = React.useState<string[]>([]);
+
+  const autoGenerateAttemptedRef = React.useRef(false);
 
   const editorExtensions = React.useMemo(
     () => compactExtensions([createFlexokiCodeMirrorTheme(currentTheme), languageByExtension('bundle.md')]),
     [currentTheme],
   );
 
-  const jsonExtensions = React.useMemo(
-    () => compactExtensions([createFlexokiCodeMirrorTheme(currentTheme), languageByExtension('package.json'), EditorView.lineWrapping]),
-    [currentTheme],
-  );
-
   const activeTabMeta = React.useMemo(() => BUNDLE_TABS.find((tab) => tab.key === activeTab) ?? BUNDLE_TABS[0], [activeTab]);
-  const isPackageStale = generatedRevision !== draftRevision;
-  const canStartRun = !isCreating && isApproved && !isPackageStale && pkgJson.trim().length > 0;
+  const canApply = !isCreating && !isGenerating && !assistantBusy && isApproved;
 
   React.useEffect(() => {
     if (!open) return;
@@ -128,60 +132,65 @@ export const AdvancedAutoDialog: React.FC<AdvancedAutoDialogProps> = ({
       if (prev[key] === value) return prev;
       return { ...prev, [key]: value };
     });
-    setDraftRevision((prev) => prev + 1);
     setIsApproved(false);
   }, []);
 
-  const handleGeneratePackage = React.useCallback(() => {
-    try {
-      const pkg = generateOrchestrationPackageFromAdvancedBundle({
-        bundle,
-        model,
-        createdBy: 'unloveable:advanced',
-        previewCwd: previewCwd ?? undefined,
-      });
-      setPkgJson(JSON.stringify(pkg, null, 2));
-      setGeneratedRevision(draftRevision);
-      const now = new Date().toISOString();
-      setLastGeneratedAt(now);
-      toast.success('Detailed package JSON generated');
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to generate package');
-    }
-  }, [bundle, draftRevision, model, previewCwd]);
-
   const handleResetBundle = React.useCallback(() => {
     setBundle(createInitialBundle(defaultGoalText));
-    setDraftRevision((prev) => prev + 1);
     setIsApproved(false);
+    setAssistantMessages([]);
     toast.success('Spec bundle reset');
   }, [defaultGoalText]);
 
   const handleGenerateSpecBundle = React.useCallback(async () => {
+    if (isGenerating) {
+      return;
+    }
     setIsGenerating(true);
+    setSpecProgress({ phase: 'start', message: 'Starting…', percent: 0 });
+    setSpecProgressLog([]);
     try {
-      const seedPrompt = bundle.spec.trim().length > 0 ? bundle.spec : (defaultGoalText ?? '');
-      const result = await orchestrateGenerateSpec({ prompt: seedPrompt, model });
+      const seedPrompt = (defaultGoalText ?? '').trim() || bundle.spec;
+      const result = await orchestrateGenerateSpecStream({
+        prompt: seedPrompt,
+        model,
+        context: { directory: previewCwd ?? undefined },
+        onProgress: (evt) => {
+          setSpecProgress(evt);
+          setSpecProgressLog((prev) => {
+            const next = [...prev, evt.message];
+            return next.length > 8 ? next.slice(next.length - 8) : next;
+          });
+        },
+      });
       const specDoc = Array.isArray(result.documents) ? result.documents.find((d) => d?.path === 'SPEC.md') : null;
-      const tasksDoc = Array.isArray(result.documents) ? result.documents.find((d) => d?.path === 'TASKS.md') : null;
-      const pkgDoc = Array.isArray(result.documents)
-        ? result.documents.find((d) => d?.path === 'ORCHESTRATION_PACKAGE.json')
+      const promptDoc = Array.isArray(result.documents) ? result.documents.find((d) => d?.path === 'PROMPT.md') : null;
+      const uiSpecDoc = Array.isArray(result.documents) ? result.documents.find((d) => d?.path === 'UI_SPEC.md') : null;
+      const implementationDoc = Array.isArray(result.documents)
+        ? result.documents.find((d) => d?.path === 'IMPLEMENTATION_PLAN.md')
+        : null;
+      const architectureDoc = Array.isArray(result.documents)
+        ? result.documents.find((d) => d?.path === 'ARCHITECTURE_PLAN.md')
+        : null;
+      const registryDoc = Array.isArray(result.documents)
+        ? result.documents.find((d) => d?.path === 'REGISTRY.md')
         : null;
 
       setBundle((prev) => ({
         ...prev,
         spec: specDoc && typeof specDoc.content === 'string' ? specDoc.content : prev.spec,
+        prompt: promptDoc && typeof promptDoc.content === 'string' ? promptDoc.content : prev.prompt,
+        uiSpec: uiSpecDoc && typeof uiSpecDoc.content === 'string' ? uiSpecDoc.content : prev.uiSpec,
+        registry: registryDoc && typeof registryDoc.content === 'string' ? registryDoc.content : prev.registry,
         implementationPlan:
-          tasksDoc && typeof tasksDoc.content === 'string' ? tasksDoc.content : prev.implementationPlan,
+          implementationDoc && typeof implementationDoc.content === 'string' ? implementationDoc.content : prev.implementationPlan,
+        architecturePlan:
+          architectureDoc && typeof architectureDoc.content === 'string' ? architectureDoc.content : prev.architecturePlan,
       }));
-      setDraftRevision((prev) => prev + 1);
       setIsApproved(false);
 
-      if (pkgDoc && typeof pkgDoc.content === 'string') {
-        setPkgJson(pkgDoc.content);
-        // Mark JSON as stale; user should explicitly Generate JSON after edits/approval.
-        setGeneratedRevision(-1);
-      }
+      const now = new Date().toISOString();
+      setLastGeneratedAt(now);
 
       toast.success('Spec bundle generated');
     } catch (error) {
@@ -189,18 +198,99 @@ export const AdvancedAutoDialog: React.FC<AdvancedAutoDialogProps> = ({
     } finally {
       setIsGenerating(false);
     }
-  }, [bundle.spec, defaultGoalText, model]);
+  }, [bundle.spec, defaultGoalText, isGenerating, model, previewCwd]);
+
+  React.useEffect(() => {
+    if (!open) {
+      autoGenerateAttemptedRef.current = false;
+      return;
+    }
+    if (autoGenerateAttemptedRef.current) return;
+    if (isGenerating) return;
+    const seed = (defaultGoalText ?? '').trim();
+    if (!seed) return;
+
+    // Attempt auto-generation exactly once per open.
+    autoGenerateAttemptedRef.current = true;
+    void handleGenerateSpecBundle();
+  }, [defaultGoalText, handleGenerateSpecBundle, isGenerating, open]);
+
+  const handleAssistantSend = React.useCallback(async () => {
+    const instruction = assistantInput.trim();
+    if (!instruction) {
+      toast.error('Type an instruction for the assistant.');
+      return;
+    }
+    if (assistantBusy) {
+      return;
+    }
+
+    const requestDocs = {
+      promptMd: bundle.prompt,
+      specMd: bundle.spec,
+      uiSpecMd: bundle.uiSpec,
+      architecturePlanMd: bundle.architecturePlan,
+      registryMd: bundle.registry,
+      implementationPlanMd: bundle.implementationPlan,
+    };
+
+    setAssistantBusy(true);
+    setAssistantInput('');
+    setAssistantMessages((prev) => [
+      ...prev,
+      { id: `m_${Date.now()}_u`, role: 'user', text: instruction },
+    ]);
+
+    try {
+      const result = await orchestrateDocAssist({
+        instruction,
+        model,
+        docs: requestDocs,
+        context: { directory: previewCwd ?? undefined },
+      });
+
+      setAssistantMessages((prev) => [
+        ...prev,
+        { id: `m_${Date.now()}_a`, role: 'assistant', text: 'Applied doc updates.' },
+      ]);
+
+      setBundle((prev) => ({
+        ...prev,
+        prompt: result.docs.promptMd,
+        spec: result.docs.specMd,
+        uiSpec: result.docs.uiSpecMd,
+        architecturePlan: result.docs.architecturePlanMd,
+        registry: result.docs.registryMd,
+        implementationPlan: result.docs.implementationPlanMd,
+      }));
+      setIsApproved(false);
+      toast.success('Assistant applied updates to your bundle');
+    } catch (error) {
+      setAssistantMessages((prev) => [
+        ...prev,
+        { id: `m_${Date.now()}_a_err`, role: 'assistant', text: error instanceof Error ? error.message : 'Doc assist failed' },
+      ]);
+      toast.error(error instanceof Error ? error.message : 'Doc assist failed');
+    } finally {
+      setAssistantBusy(false);
+    }
+  }, [assistantBusy, assistantInput, bundle, model, previewCwd]);
 
   const handleRun = React.useCallback(async () => {
-    if (!canStartRun) {
-      toast.error('Approve and regenerate JSON after the latest edits before starting the run.');
+    if (!canApply) {
+      toast.error('Approve the bundle before applying.');
       return;
     }
 
     setIsCreating(true);
     try {
-      const parsed = JSON.parse(pkgJson) as unknown;
-      const created = await orchestrateCreateRun(parsed);
+      const pkg = generateOrchestrationPackageFromAdvancedBundle({
+        bundle,
+        model,
+        createdBy: 'unloveable:advanced',
+        previewCwd: previewCwd ?? undefined,
+      });
+      const created = await orchestrateCreateRun(pkg);
       onOpenChange(false);
       onCreatedRun(created.id);
       toast.success('Run started');
@@ -209,7 +299,7 @@ export const AdvancedAutoDialog: React.FC<AdvancedAutoDialogProps> = ({
     } finally {
       setIsCreating(false);
     }
-  }, [canStartRun, onCreatedRun, onOpenChange, pkgJson]);
+  }, [bundle, canApply, model, onCreatedRun, onOpenChange, previewCwd]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -219,9 +309,9 @@ export const AdvancedAutoDialog: React.FC<AdvancedAutoDialogProps> = ({
       >
         <DialogHeader className="px-5 py-4 border-b border-border bg-muted/30">
           <DialogTitle>Advanced Auto</DialogTitle>
-          <div className="typography-meta text-muted-foreground">
-            Review and edit Spec, UI Spec, Prompt, Implementation Plan, and Architecture Plan before generating final package JSON.
-          </div>
+          <DialogDescription>
+            Review and edit Spec, UI Spec, Prompt, Registry, Implementation Plan, and Architecture Plan before generating final package JSON.
+          </DialogDescription>
           <div className="flex items-center justify-end pt-2">
             <Button
               type="button"
@@ -231,49 +321,50 @@ export const AdvancedAutoDialog: React.FC<AdvancedAutoDialogProps> = ({
             >
               {isGenerating ? 'Generating…' : 'Generate Spec Bundle'}
             </Button>
+            {isGenerating ? (
+              <div className="ml-3 min-w-0">
+                <div className="typography-micro text-muted-foreground truncate">
+                  {specProgress?.message ?? 'Working…'}
+                </div>
+                {specProgressLog.length > 1 ? (
+                  <div className="typography-micro text-muted-foreground truncate">
+                    {specProgressLog[specProgressLog.length - 2]}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </DialogHeader>
 
-        <div className="grid h-[calc(100dvh-170px)] min-h-0 lg:grid-cols-[260px_minmax(0,1fr)_minmax(0,1fr)]">
-          <div className="border-r border-border bg-muted/20 min-h-0 overflow-auto p-3 space-y-2">
-            <div className="typography-ui-label text-foreground px-2">Spec Bundle</div>
-            {BUNDLE_TABS.map((tab) => {
-              const isActive = tab.key === activeTab;
-              return (
-                <button
-                  key={tab.key}
-                  type="button"
-                  className="w-full text-left rounded-lg border px-3 py-2 transition-colors"
-                  style={{
-                    borderColor: isActive ? currentTheme.colors.interactive.selection : currentTheme.colors.interactive.border,
-                    backgroundColor: isActive ? currentTheme.colors.interactive.selection : currentTheme.colors.surface.elevated,
-                    color: isActive ? currentTheme.colors.interactive.selectionForeground : currentTheme.colors.surface.foreground,
-                  }}
-                  onClick={() => setActiveTab(tab.key)}
-                  disabled={isCreating}
-                >
-                  <div className="typography-meta font-semibold">{tab.label}</div>
-                  <div className="typography-micro opacity-80 line-clamp-2">{tab.description}</div>
-                </button>
-              );
-            })}
-            <div className="mt-3 rounded-lg border border-border bg-background p-3">
-              <div className="typography-micro text-muted-foreground">Model</div>
-              <div className="typography-meta text-foreground font-mono">{model}</div>
-              <div className="typography-micro text-muted-foreground mt-2">Last generated</div>
-              <div className="typography-meta text-foreground">{formatDateTime(lastGeneratedAt)}</div>
-            </div>
-          </div>
-
+        <div className="grid h-[calc(100dvh-170px)] min-h-0 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.8fr)]">
           <div className="min-h-0 flex flex-col border-r border-border">
-            <div className="px-4 py-2 border-b border-border flex items-center justify-between gap-2">
-              <div className="min-w-0">
-                <div className="typography-ui-label text-foreground">{activeTabMeta.label}</div>
-                <div className="typography-micro text-muted-foreground font-mono">{activeTabMeta.pseudoPath}</div>
+            <div className="px-4 py-3 border-b border-border bg-[var(--surface-muted)]">
+              <AnimatedTabs<BundleKey>
+                value={activeTab}
+                onValueChange={setActiveTab}
+                size="sm"
+                collapseLabelsOnSmall
+                collapseLabelsOnNarrow
+                tabs={BUNDLE_TABS.map((t) => ({ value: t.key, label: t.label }))}
+              />
+              <div className="pt-2 flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="typography-ui-label text-foreground">{activeTabMeta.label}</div>
+                  <div className="typography-micro text-muted-foreground font-mono truncate">{activeTabMeta.pseudoPath}</div>
+                  <div className="typography-micro text-muted-foreground pt-1 line-clamp-2">{activeTabMeta.description}</div>
+                </div>
+                <div className="shrink-0 flex items-center gap-2">
+                  <div className="hidden md:block text-right">
+                    <div className="typography-micro text-muted-foreground">Model</div>
+                    <div className="typography-micro text-foreground font-mono">{model}</div>
+                    <div className="typography-micro text-muted-foreground pt-1">Last generated</div>
+                    <div className="typography-micro text-foreground">{formatDateTime(lastGeneratedAt)}</div>
+                  </div>
+                  <Button type="button" variant="secondary" onClick={handleResetBundle} disabled={isCreating || isGenerating || assistantBusy}>
+                    Reset
+                  </Button>
+                </div>
               </div>
-              <Button type="button" variant="secondary" onClick={handleResetBundle} disabled={isCreating}>
-                Reset Bundle
-              </Button>
             </div>
             <div className="min-h-0 flex-1">
               <CodeMirrorEditor
@@ -285,26 +376,44 @@ export const AdvancedAutoDialog: React.FC<AdvancedAutoDialogProps> = ({
             </div>
           </div>
 
-          <div className="min-h-0 flex flex-col">
-            <div className="px-4 py-2 border-b border-border flex items-center justify-between gap-2">
-              <div>
-                <div className="typography-ui-label text-foreground">OrchestrationPackage (JSON)</div>
-                <div className="typography-micro text-muted-foreground">
-                  {isPackageStale ? 'Bundle changed, regenerate JSON before starting run.' : 'JSON is synced with current spec bundle.'}
-                </div>
-              </div>
-              <Button type="button" variant="secondary" onClick={handleGeneratePackage} disabled={isCreating}>
-                Generate JSON
-              </Button>
+          <div className="min-h-0 flex flex-col border-l border-border">
+            <div className="px-4 py-2 border-b border-border">
+              <div className="typography-ui-label text-foreground">Assistant</div>
+              <div className="typography-micro text-muted-foreground">Give an instruction; it will update the bundle docs.</div>
             </div>
-            <div className="min-h-0 flex-1">
-              <CodeMirrorEditor
-              value={pkgJson}
-              onChange={setPkgJson}
-                extensions={jsonExtensions}
-                className="[&_.cm-editor]:bg-background [&_.cm-scroller]:px-3 [&_.cm-scroller]:py-3"
-                readOnly={isCreating}
+            <div className="min-h-0 flex-1 overflow-auto px-4 py-3 space-y-2">
+              {assistantMessages.length === 0 ? (
+                <div className="typography-meta text-muted-foreground">
+                  Example: “Tighten the scope to exclude desktop runtime; add explicit validation commands.”
+                </div>
+              ) : null}
+              {assistantMessages.map((m) => (
+                <div
+                  key={m.id}
+                  className="rounded-md border border-border px-3 py-2"
+                  style={{ backgroundColor: m.role === 'user' ? currentTheme.colors.surface.elevated : currentTheme.colors.surface.muted }}
+                >
+                  <div className="typography-micro text-muted-foreground font-mono">{m.role}</div>
+                  <div className="typography-meta text-foreground whitespace-pre-wrap">{m.text}</div>
+                </div>
+              ))}
+            </div>
+            <div className="border-t border-border px-4 py-3 bg-[var(--surface-muted)]">
+              <textarea
+                className="w-full min-h-[80px] resize-none rounded-md border border-border bg-[var(--surface-elevated)] p-2 typography-meta text-foreground"
+                value={assistantInput}
+                onChange={(e) => setAssistantInput(e.target.value)}
+                placeholder="Ask the assistant to adjust the docs…"
+                disabled={assistantBusy || isCreating}
               />
+              <div className="pt-2 flex items-center justify-end gap-2">
+                <Button type="button" variant="secondary" onClick={() => setAssistantMessages([])} disabled={assistantBusy || isCreating}>
+                  Clear
+                </Button>
+                <Button type="button" onClick={() => void handleAssistantSend()} disabled={assistantBusy || isCreating}>
+                  {assistantBusy ? 'Working…' : 'Update Docs'}
+                </Button>
+              </div>
             </div>
           </div>
         </div>
@@ -322,12 +431,12 @@ export const AdvancedAutoDialog: React.FC<AdvancedAutoDialogProps> = ({
             </span>
           </div>
           <div className="flex items-center gap-2">
-          <Button type="button" variant="secondary" onClick={() => onOpenChange(false)} disabled={isCreating}>
-            Close
-          </Button>
-          <Button type="button" onClick={() => void handleRun()} disabled={!canStartRun}>
-            {isCreating ? 'Starting…' : 'Start Run'}
-          </Button>
+            <Button type="button" variant="secondary" onClick={() => onOpenChange(false)} disabled={isCreating}>
+              Close
+            </Button>
+            <Button type="button" onClick={() => void handleRun()} disabled={!canApply}>
+              {isCreating ? 'Applying…' : 'Apply'}
+            </Button>
           </div>
         </DialogFooter>
       </DialogContent>
