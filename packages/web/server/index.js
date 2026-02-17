@@ -6785,13 +6785,8 @@ async function main(options = {}) {
         }
       };
 
-      req.on('close', () => {
+      res.on('close', () => {
         cleanup();
-        try {
-          res.end();
-        } catch {
-          // ignore
-        }
       });
 
       heartbeatInterval = setInterval(() => {

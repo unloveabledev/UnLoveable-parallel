@@ -181,6 +181,11 @@ export async function orchestrateGenerateSpecStream(input: {
     }
   }
 
+  // Process any trailing frame without terminal separator.
+  if (!result && !streamError && buffer.trim().length > 0) {
+    handleFrame(buffer.trim());
+  }
+
   if (streamError) {
     throw new Error(streamError);
   }

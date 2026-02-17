@@ -127,13 +127,8 @@ export function buildApp(options: BuildAppOptions = {}): BuildAppResult {
       }
     }, 15000)
 
-    req.on('close', () => {
+    res.on('close', () => {
       clearInterval(heartbeat)
-      try {
-        res.end()
-      } catch {
-        // ignore
-      }
     })
 
     try {

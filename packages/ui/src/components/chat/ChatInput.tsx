@@ -44,6 +44,8 @@ import {
     DropdownMenu,
     DropdownMenuContent,
     DropdownMenuItem,
+    DropdownMenuRadioGroup,
+    DropdownMenuRadioItem,
     DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
@@ -1958,6 +1960,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBo
                     className={cn(
                         footerIconButtonClass,
                         'rounded-md text-muted-foreground',
+                        interactionMode !== 'prompt' && 'bg-interactive-selection/20 text-foreground',
                         'hover:bg-interactive-hover/40 hover:text-foreground'
                     )}
                     onPointerDownCapture={(event) => {
@@ -2001,15 +2004,18 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBo
                 </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-                <DropdownMenuItem onSelect={() => persistInteractionMode('prompt')}>
-                    Prompt Mode
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => persistInteractionMode('auto-simple')}>
-                    Simple Auto
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => persistInteractionMode('auto-advanced')}>
-                    Advanced Auto
-                </DropdownMenuItem>
+                <DropdownMenuRadioGroup
+                    value={interactionMode}
+                    onValueChange={(value) => {
+                        if (value === 'prompt' || value === 'auto-simple' || value === 'auto-advanced') {
+                            persistInteractionMode(value);
+                        }
+                    }}
+                >
+                    <DropdownMenuRadioItem value="prompt">Prompt Mode</DropdownMenuRadioItem>
+                    <DropdownMenuRadioItem value="auto-simple">Simple Auto</DropdownMenuRadioItem>
+                    <DropdownMenuRadioItem value="auto-advanced">Advanced Auto</DropdownMenuRadioItem>
+                </DropdownMenuRadioGroup>
             </DropdownMenuContent>
         </DropdownMenu>
     );
