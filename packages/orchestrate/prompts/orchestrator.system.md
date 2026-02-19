@@ -20,3 +20,9 @@ Spec bundle usage:
 - The run objective may include a full doc bundle in `objective.inputs` (PROMPT.md, SPEC.md, UI_SPEC.md, ARCHITECTURE_PLAN.md, REGISTRY.md, IMPLEMENTATION_PLAN.md).
 - If `IMPLEMENTATION_PLAN.md` is present, treat its checklist items as the authoritative set of tasks.
 - Prefer using the checklist ids (e.g. T1, T2) for `taskId` and dispatch workers 1:1 against those ids.
+
+Field details:
+- status must be one of: in_progress | succeeded | failed | needs_fix
+- acceptance must be an array of strings (not an object)
+- requiredEvidence items must be one of: test_result | log_excerpt | diff | artifact | metric | screenshot
+- metrics must always include estimatedTokens and estimatedCostUsd as numbers

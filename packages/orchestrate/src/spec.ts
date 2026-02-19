@@ -114,7 +114,7 @@ export async function generateSpecBundle(input: {
       sessionId,
       directory: directory || null,
       model: modelParsed,
-      timeoutMs: 120_000,
+      timeoutMs: 180_000,
       prompt: buildPhase1Prompt(mergedPrompt),
       schema: phase1Schema,
     })
@@ -125,7 +125,7 @@ export async function generateSpecBundle(input: {
       sessionId,
       directory: directory || null,
       model: modelParsed,
-      timeoutMs: 120_000,
+      timeoutMs: 180_000,
       prompt: buildArchitecturePrompt({
         promptMd: phase1.promptMd,
         specMd: phase1.specMd,
@@ -140,7 +140,7 @@ export async function generateSpecBundle(input: {
       sessionId,
       directory: directory || null,
       model: modelParsed,
-      timeoutMs: 120_000,
+      timeoutMs: 180_000,
       prompt: buildRegistryPrompt({
         promptMd: phase1.promptMd,
         specMd: phase1.specMd,
@@ -156,7 +156,7 @@ export async function generateSpecBundle(input: {
       sessionId,
       directory: directory || null,
       model: modelParsed,
-      timeoutMs: 150_000,
+      timeoutMs: 240_000,
       prompt: buildImplementationPrompt({
         promptMd: phase1.promptMd,
         specMd: phase1.specMd,

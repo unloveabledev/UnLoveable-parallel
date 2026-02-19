@@ -213,7 +213,7 @@ export function generateOrchestrationPackage(input: {
       limits: {
         maxOrchestratorIterations: 4,
         maxWorkerIterations: 6,
-        maxRunWallClockMs: 20 * 60 * 1000,
+        maxRunWallClockMs: 2 * 60 * 60 * 1000,
       },
       retries: {
         maxWorkerTaskRetries: 1,
@@ -223,8 +223,9 @@ export function generateOrchestrationPackage(input: {
         maxWorkers: 4,
       },
       timeouts: {
-        workerTaskMs: 2 * 60 * 1000,
-        orchestratorStepMs: 2 * 60 * 1000,
+        // Worker tasks can involve installs/builds; keep generous by default.
+        workerTaskMs: 10 * 60 * 1000,
+        orchestratorStepMs: 5 * 60 * 1000,
       },
       budget: {
         maxTokens: 250_000,
@@ -345,7 +346,7 @@ export function generateOrchestrationPackageFromAdvancedBundle(input: {
       limits: {
         maxOrchestratorIterations: 6,
         maxWorkerIterations: 8,
-        maxRunWallClockMs: 25 * 60 * 1000,
+        maxRunWallClockMs: 2 * 60 * 60 * 1000,
       },
       retries: {
         maxWorkerTaskRetries: 2,
@@ -355,8 +356,8 @@ export function generateOrchestrationPackageFromAdvancedBundle(input: {
         maxWorkers: 4,
       },
       timeouts: {
-        workerTaskMs: 2 * 60 * 1000,
-        orchestratorStepMs: 2 * 60 * 1000,
+        workerTaskMs: 10 * 60 * 1000,
+        orchestratorStepMs: 5 * 60 * 1000,
       },
       budget: {
         maxTokens: 350_000,

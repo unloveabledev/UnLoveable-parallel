@@ -9,6 +9,7 @@ import { validateOrchestratorOutput, validateResult, validateTask } from './vali
 import type { PreviewManager, PreviewConfig } from './preview.js'
 import path from 'node:path'
 import os from 'node:os'
+import fs from 'node:fs'
 import { GitManager } from './git-manager.js'
 import { validateTaskIdsAgainstImplementationPlan } from './implementation-plan.js'
 
@@ -186,6 +187,16 @@ export class RunEngine {
       autoStopOnTerminal: preview.autoStopOnTerminal !== false,
     }
 
+    if (!isPreviewRunnable(config)) {
+      this.emit(run.id, 'run.warning', {
+        runId: run.id,
+        code: 'preview_skipped',
+        reason: 'preview config does not appear runnable in cwd',
+        preview: config,
+      })
+      return
+    }
+
     try {
       await this.previewManager.start(run.id, config)
     } catch (error) {
@@ -202,6 +213,16 @@ export class RunEngine {
     const repoPath = typeof git.repoPath === 'string' && git.repoPath.trim().length > 0 ? git.repoPath.trim() : ''
     if (!repoPath) {
       this.emit(run.id, 'git.error', { runId: run.id, message: 'git.repoPath is required when git.enabled is true' })
+      return
+    }
+
+    if (!looksLikeGitRepo(repoPath)) {
+      this.emit(run.id, 'run.warning', {
+        runId: run.id,
+        code: 'git_disabled_not_repo',
+        reason: 'git.enabled was true but repoPath is not a git repository; skipping git swarm',
+        repoPath,
+      })
       return
     }
 
@@ -735,4 +756,41 @@ export class RunEngine {
       }
     }
   }
+}
+
+function looksLikeGitRepo(repoPath: string): boolean {
+  try {
+    return fs.existsSync(path.join(repoPath, '.git'))
+  } catch {
+    return false
+  }
+}
+
+function isPreviewRunnable(config: PreviewConfig): boolean {
+  const cwd = config.cwd
+  if (!cwd) return false
+  try {
+    if (!fs.existsSync(cwd)) return false
+  } catch {
+    return false
+  }
+
+  // If we're using the default bun dev script approach, ensure scripts.dev exists.
+  const command = String(config.command || '').trim()
+  const args = Array.isArray(config.args) ? config.args.map(String) : []
+  const isRunDev = args.length >= 2 && args[0] === 'run' && args[1] === 'dev'
+  if (command === 'bun' && isRunDev) {
+    const pkgPath = path.join(cwd, 'package.json')
+    if (!fs.existsSync(pkgPath)) return false
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as unknown
+      const scripts = pkg && typeof pkg === 'object' ? (pkg as Record<string, unknown>).scripts : null
+      const dev = scripts && typeof scripts === 'object' ? (scripts as Record<string, unknown>).dev : null
+      return typeof dev === 'string' && dev.trim().length > 0
+    } catch {
+      return false
+    }
+  }
+
+  return true
 }

@@ -470,6 +470,32 @@ function buildWorkerPrompt(input: {
   const implementationPlanMd = typeof inputs.implementationPlanMd === 'string' ? inputs.implementationPlanMd : ''
   const taskLine = implementationPlanMd ? extractImplementationTaskLine(implementationPlanMd, input.task.taskId) : null
 
+  const requiredEvidenceTypes = (input.task.requiredEvidence || []).map((e) => e.type)
+  const evidenceTypes = requiredEvidenceTypes.length > 0 ? requiredEvidenceTypes : ['log_excerpt']
+
+  const skeleton = {
+    resultId: `result_${Date.now()}`,
+    taskId: input.task.taskId,
+    runId: input.run.id,
+    agentRole: 'worker',
+    workerId: null,
+    iteration: { index: input.iteration, max: input.task.loop.maxIterations, attempt: input.attempt },
+    stage: input.stage,
+    status: 'in_progress',
+    summary: '...',
+    checks: [],
+    evidence: evidenceTypes.map((t) => ({
+      evidenceId: `ev_${t}_1`,
+      type: t,
+      uri: 'log://pending',
+      description: 'placeholder (replace with real evidence)',
+      hash: '00000000',
+    })),
+    artifacts: [],
+    metrics: { durationMs: 0, tokensUsed: 0, costUsd: 0 },
+    next: { recommendedStage: 'act', reason: '...' },
+  }
+
   return [
     input.system.trim(),
     '',
@@ -488,6 +514,10 @@ function buildWorkerPrompt(input: {
     '',
     'Required evidence:',
     requiredEvidence || '- (none)',
+    '',
+    'You MUST return a valid AgentResult JSON object. Do not omit required keys.',
+    'Use this skeleton as a guide (fill with real values; keep keys the same):',
+    JSON.stringify(skeleton, null, 2),
     '',
     taskLine ? `Implementation plan line for ${input.task.taskId}:\n${taskLine}` : null,
     specMd ? 'SPEC.md (context):\n' + truncateDoc(specMd) : null,

@@ -298,7 +298,7 @@ export function buildApp(options: BuildAppOptions = {}): BuildAppResult {
           limits: { maxOrchestratorIterations: 1, maxWorkerIterations: 1, maxRunWallClockMs: 120_000 },
           retries: { maxWorkerTaskRetries: 0, maxMalformedOutputRetries: 0 },
           concurrency: { maxWorkers: 1 },
-          timeouts: { workerTaskMs: 60_000, orchestratorStepMs: 60_000 },
+          timeouts: { workerTaskMs: 180_000, orchestratorStepMs: 180_000 },
           budget: { maxTokens: 100_000, maxCostUsd: 5 },
           determinism: { enforceStageOrder: true, requireStrictJson: true, singleSessionPerRun: true },
         },

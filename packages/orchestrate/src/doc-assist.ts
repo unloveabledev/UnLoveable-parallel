@@ -67,7 +67,7 @@ export async function assistDocs(input: {
       directory: input.request.directory,
       model: input.request.model,
       agentName: 'build',
-      timeoutMs: 90_000,
+      timeoutMs: 180_000,
       text: buildDocAssistPrompt(input.request),
     })
 
