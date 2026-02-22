@@ -451,6 +451,8 @@ function buildOrchestratorPrompt(input: {
           inputs: { objective: '...' },
           acceptance: ['...'],
           requiredEvidence: ['diff', 'log_excerpt'],
+          taskType: 'normal',
+          expectedDurationMs: 10 * 60 * 1000,
         },
       ],
     },

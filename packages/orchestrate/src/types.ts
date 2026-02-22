@@ -236,6 +236,10 @@ export interface OrchestratorOutput {
     inputs: Record<string, unknown>
     acceptance: string[]
     requiredEvidence: EvidenceType[]
+
+    // Optional orchestration hints. Engine uses these to set per-task time budgets.
+    expectedDurationMs?: number
+    taskType?: 'quick' | 'normal' | 'heavy' | 'long'
   }>
   checks?: Array<{
     checkId: string

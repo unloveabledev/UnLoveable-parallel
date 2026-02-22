@@ -51,6 +51,8 @@ const orchestratorOutputSchema = z.object({
         requiredEvidence: z.array(
           z.enum(['test_result', 'log_excerpt', 'diff', 'artifact', 'metric', 'screenshot']),
         ),
+        expectedDurationMs: z.number().int().positive().max(12 * 60 * 60 * 1000).optional(),
+        taskType: z.enum(['quick', 'normal', 'heavy', 'long']).optional(),
       }),
     )
     .optional(),

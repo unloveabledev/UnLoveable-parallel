@@ -26,3 +26,4 @@ Field details:
 - acceptance must be an array of strings (not an object)
 - requiredEvidence items must be one of: test_result | log_excerpt | diff | artifact | metric | screenshot
 - metrics must always include estimatedTokens and estimatedCostUsd as numbers
+- workerDispatch may include `taskType` (quick|normal|heavy|long) and/or `expectedDurationMs` to set per-task time budgets

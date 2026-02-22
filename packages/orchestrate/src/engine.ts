@@ -510,13 +510,19 @@ export class RunEngine {
     stage: LoopStage
     iteration: number
     attempt: number
+    taskDeadlineMs: number
   }): Promise<AgentResult> {
     const maxMalformedRetries = input.run.orchestrationPackage.runPolicy.retries.maxMalformedOutputRetries
 
     for (let malformedAttempt = 1; malformedAttempt <= maxMalformedRetries + 1; malformedAttempt += 1) {
+      const remainingMs = input.taskDeadlineMs - Date.now()
+      if (remainingMs <= 0) {
+        throw new PolicyError('worker_timeout', `worker_timeout after ${input.task.constraints.timeoutMs}ms`)
+      }
+
       const rawResult = await this.withTimeout(
         this.adapter.runWorkerStage(input),
-        input.run.orchestrationPackage.runPolicy.timeouts.workerTaskMs,
+        remainingMs,
         'worker_timeout',
       )
       const validation = validateResult(rawResult)
@@ -547,6 +553,8 @@ export class RunEngine {
       inputs: Record<string, unknown>
       acceptance: string[]
       requiredEvidence: AgentTask['requiredEvidence'][number]['type'][]
+      expectedDurationMs?: number
+      taskType?: 'quick' | 'normal' | 'heavy' | 'long'
     }>,
   ): Promise<AgentResult[]> {
     if (workerDispatches.length === 0) {
@@ -586,9 +594,13 @@ export class RunEngine {
       inputs: Record<string, unknown>
       acceptance: string[]
       requiredEvidence: AgentTask['requiredEvidence'][number]['type'][]
+      expectedDurationMs?: number
+      taskType?: 'quick' | 'normal' | 'heavy' | 'long'
     },
   ): Promise<AgentResult> {
     const pkg: OrchestrationPackage = run.orchestrationPackage
+
+    const expectedDurationMs = resolveExpectedDurationMs(dispatch, pkg)
     const task: AgentTask = {
       taskId: dispatch.taskId,
       runId: run.id,
@@ -609,7 +621,8 @@ export class RunEngine {
       objective: pkg.objective.description,
       inputs: dispatch.inputs,
       constraints: {
-        timeoutMs: pkg.runPolicy.timeouts.workerTaskMs,
+        // Total task budget (across stages); enforced as a deadline.
+        timeoutMs: expectedDurationMs,
         budgetTokens: pkg.runPolicy.budget.maxTokens,
         allowedSkills: pkg.registries.skills
           .map((skill) => (typeof skill.name === 'string' ? skill.name : null))
@@ -648,12 +661,13 @@ export class RunEngine {
         })
       }
 
+      const taskDeadlineMs = Date.now() + task.constraints.timeoutMs
       let attemptFailed = false
 
       for (let iteration = 1; iteration <= task.loop.maxIterations; iteration += 1) {
         for (const stage of workerStages) {
           try {
-            latestResult = await this.runWorkerStageValidated({ run, task, stage, iteration, attempt })
+            latestResult = await this.runWorkerStageValidated({ run, task, stage, iteration, attempt, taskDeadlineMs })
           } catch (error) {
             if (error instanceof PolicyError && (error.code === 'worker_output_invalid' || error.code === 'worker_timeout')) {
               attemptFailed = true
@@ -738,14 +752,15 @@ export class RunEngine {
             break
           }
 
-          if (latestResult.status === 'needs_fix') {
-            latestResult = await this.runWorkerStageValidated({
-              run,
-              task,
-              stage: 'fix',
-              iteration,
-              attempt,
-            })
+           if (latestResult.status === 'needs_fix') {
+             latestResult = await this.runWorkerStageValidated({
+               run,
+               task,
+               stage: 'fix',
+               iteration,
+               attempt,
+               taskDeadlineMs,
+             })
             this.repository.saveResult(latestResult)
             this.emit(run.id, 'worker.fix.completed', {
               runId: run.id,
@@ -865,4 +880,36 @@ function isPreviewRunnable(config: PreviewConfig): boolean {
   }
 
   return true
+}
+
+function resolveExpectedDurationMs(
+  dispatch: {
+    expectedDurationMs?: number
+    taskType?: 'quick' | 'normal' | 'heavy' | 'long'
+  },
+  pkg: OrchestrationPackage,
+): number {
+  const explicit = typeof dispatch.expectedDurationMs === 'number' ? dispatch.expectedDurationMs : null
+  const fromType = (() => {
+    switch (dispatch.taskType) {
+      case 'quick':
+        return 2 * 60 * 1000
+      case 'heavy':
+        return 20 * 60 * 1000
+      case 'long':
+        return 45 * 60 * 1000
+      case 'normal':
+      default:
+        return 10 * 60 * 1000
+    }
+  })()
+
+  const fallback = pkg.runPolicy.timeouts.workerTaskMs
+  const raw = explicit ?? fromType ?? fallback
+
+  // Clamp to prevent accidental runaway budgets.
+  const min = 30 * 1000
+  const max = 2 * 60 * 60 * 1000
+  const clamped = Math.max(min, Math.min(max, Math.floor(raw)))
+  return Number.isFinite(clamped) ? clamped : fallback
 }
