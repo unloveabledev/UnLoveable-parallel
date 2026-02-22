@@ -101,22 +101,6 @@ export class RunEngine {
         }
 
         const reportOutput = await this.runOrchestratorStage(run, 'report', iteration, workerResults)
-        const reportEvidenceSet = new Set(workerResults.flatMap((result) => result.evidence.map((evidence) => evidence.evidenceId)))
-
-        const hasRequiredEvidenceRefs =
-          reportOutput.report?.evidenceRefs.every((evidenceRef) => reportEvidenceSet.has(evidenceRef)) ?? false
-
-        if (!hasRequiredEvidenceRefs) {
-          this.emit(runId, 'orchestrator.report.rejected', {
-            runId,
-            reason: 'report references unknown evidence',
-          })
-          run = this.repository.updateRunStatus(runId, 'failed', 'invalid_report_evidence_refs')
-          this.emit(runId, 'run.failed', { runId, reason: run.reason })
-          await this.maybeStopPreview(run)
-          await this.maybeCleanupGit(run)
-          return
-        }
 
         // Guard against false positives: if a run requires live preview, do not
         // report success unless the preview reached ready state.
@@ -365,6 +349,20 @@ export class RunEngine {
           continue
         }
 
+        const reportValidation = this.validateOrchestratorReportRefs(stage, validation.value, workerResults)
+        if (!reportValidation.ok) {
+          validationError = reportValidation.errors
+          validationFeedback = reportValidation.errors.map((e) => `- ${e.path}: ${e.message}`).join('\n')
+          this.emit(run.id, 'agent.output.invalid', {
+            runId: run.id,
+            actor: 'orchestrator',
+            stage,
+            malformedAttempt,
+            errors: reportValidation.errors,
+          })
+          continue
+        }
+
         validationFeedback = null
         this.repository.updateBudgetUsage(
           run.id,
@@ -430,6 +428,58 @@ export class RunEngine {
 
     const taskIds = Array.isArray(output.workerDispatch) ? output.workerDispatch.map((d) => d.taskId) : []
     return validateTaskIdsAgainstImplementationPlan({ implementationPlanMd, stage: 'act', taskIds })
+  }
+
+  private validateOrchestratorReportRefs(
+    stage: LoopStage,
+    output: {
+      report?: { evidenceRefs?: unknown; artifactRefs?: unknown } | undefined
+    },
+    workerResults: AgentResult[],
+  ): { ok: true } | { ok: false; errors: Array<{ path: string; message: string }> } {
+    if (stage !== 'report') {
+      return { ok: true }
+    }
+    const report = output.report
+    if (!report) {
+      return { ok: true }
+    }
+
+    const evidenceIds = new Set(workerResults.flatMap((r) => r.evidence.map((e) => e.evidenceId)))
+    const artifactIds = new Set(workerResults.flatMap((r) => r.artifacts.map((a) => a.artifactId)))
+
+    const errors: Array<{ path: string; message: string }> = []
+
+    if (report.evidenceRefs !== undefined) {
+      if (!Array.isArray(report.evidenceRefs) || !report.evidenceRefs.every((v) => typeof v === 'string')) {
+        errors.push({ path: 'report.evidenceRefs', message: 'must be an array of evidenceId strings' })
+      } else {
+        for (let i = 0; i < report.evidenceRefs.length; i += 1) {
+          const ref = report.evidenceRefs[i]
+          if (!evidenceIds.has(ref)) {
+            errors.push({ path: `report.evidenceRefs[${i}]`, message: `unknown evidenceId: ${ref}` })
+          }
+        }
+      }
+    }
+
+    if (report.artifactRefs !== undefined) {
+      if (!Array.isArray(report.artifactRefs) || !report.artifactRefs.every((v) => typeof v === 'string')) {
+        errors.push({ path: 'report.artifactRefs', message: 'must be an array of artifactId strings' })
+      } else {
+        for (let i = 0; i < report.artifactRefs.length; i += 1) {
+          const ref = report.artifactRefs[i]
+          if (!artifactIds.has(ref)) {
+            errors.push({ path: `report.artifactRefs[${i}]`, message: `unknown artifactId: ${ref}` })
+          }
+        }
+      }
+    }
+
+    if (errors.length > 0) {
+      return { ok: false, errors }
+    }
+    return { ok: true }
   }
 
   private async runWorkerStageValidated(input: {
