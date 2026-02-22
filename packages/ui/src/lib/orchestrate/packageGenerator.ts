@@ -217,7 +217,7 @@ export function generateOrchestrationPackage(input: {
       },
       retries: {
         maxWorkerTaskRetries: 1,
-        maxMalformedOutputRetries: 1,
+        maxMalformedOutputRetries: 3,
       },
       concurrency: {
         maxWorkers: 4,
@@ -350,7 +350,7 @@ export function generateOrchestrationPackageFromAdvancedBundle(input: {
       },
       retries: {
         maxWorkerTaskRetries: 2,
-        maxMalformedOutputRetries: 1,
+        maxMalformedOutputRetries: 3,
       },
       concurrency: {
         maxWorkers: 4,

@@ -415,10 +415,76 @@ function buildOrchestratorPrompt(input: {
         ? orchestratorValidationErrors.map(String).filter(Boolean).join('\n')
         : ''
 
+  const base = {
+    agentRole: 'orchestrator',
+    stage: input.stage,
+    status: 'in_progress',
+    summary: '...',
+    metrics: { estimatedTokens: 0, estimatedCostUsd: 0 },
+    next: { recommendedStage: 'act', reason: '...' },
+  }
+
+  const skeletonByStage: Record<LoopStage, unknown> = {
+    plan: {
+      ...base,
+      next: { recommendedStage: 'act', reason: 'Dispatch first dependency-free tasks' },
+      plan: {
+        goals: ['...'],
+        tasks: [
+          {
+            taskId: 'T1',
+            objective: '...',
+            priority: 'high',
+            requiredEvidence: ['diff', 'log_excerpt'],
+            dependencies: [],
+          },
+        ],
+      },
+    },
+    act: {
+      ...base,
+      next: { recommendedStage: 'check', reason: 'Wait for worker results' },
+      workerDispatch: [
+        {
+          taskId: 'T1',
+          workerProfile: 'task',
+          inputs: { objective: '...' },
+          acceptance: ['...'],
+          requiredEvidence: ['diff', 'log_excerpt'],
+        },
+      ],
+    },
+    check: {
+      ...base,
+      next: { recommendedStage: 'report', reason: 'All checks passed' },
+      checks: [{ checkId: 'CHK-1', passed: true, reason: '...' }],
+    },
+    fix: {
+      ...base,
+      next: { recommendedStage: 'act', reason: 'Retry failed tasks' },
+      fixes: [{ issue: '...', action: '...', retryTarget: 'T1' }],
+    },
+    report: {
+      ...base,
+      status: 'succeeded',
+      next: { recommendedStage: 'end', reason: 'Done criteria satisfied' },
+      report: {
+        outcome: 'succeeded',
+        deliverables: ['...'],
+        evidenceRefs: ['ev_log_excerpt_1'],
+        artifactRefs: ['art_1'],
+        openRisks: [],
+      },
+    },
+  }
+
   return [
     input.system.trim(),
     '',
     'You are producing STRICT JSON only. No markdown. No commentary.',
+    'You MUST return a valid OrchestratorOutput object. Do not omit required keys.',
+    'Use this stage skeleton as a guide (fill with real values; keep keys the same):',
+    JSON.stringify(skeletonByStage[input.stage], null, 2),
     '',
     `Stage: ${input.stage}`,
     `Iteration: ${input.iteration}`,
