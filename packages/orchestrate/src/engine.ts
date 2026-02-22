@@ -63,6 +63,7 @@ export class RunEngine {
       this.emit(runId, 'session.started', { runId, sessionId: session.sessionId })
 
       let workerResults: AgentResult[] = []
+      let allWorkerResults: AgentResult[] = []
 
       for (let iteration = 1; iteration <= run.orchestrationPackage.runPolicy.limits.maxOrchestratorIterations; iteration += 1) {
         run = this.enforceRunPolicy(run)
@@ -74,10 +75,11 @@ export class RunEngine {
         this.emit(runId, 'orchestrator.act.completed', { runId, iteration, summary: actOutput.summary, output: actOutput })
 
         workerResults = await this.runWorkerDispatches(run, iteration, actOutput.workerDispatch ?? [])
+        allWorkerResults = [...allWorkerResults, ...workerResults]
 
         await this.maybeFinalizeGitSwarm(run)
 
-        const checkOutput = await this.runOrchestratorStage(run, 'check', iteration, workerResults)
+        const checkOutput = await this.runOrchestratorStage(run, 'check', iteration, allWorkerResults)
         this.emit(runId, 'orchestrator.check.completed', {
           runId,
           iteration,
@@ -95,12 +97,33 @@ export class RunEngine {
         return
       }
 
-          const fixOutput = await this.runOrchestratorStage(run, 'fix', iteration, workerResults)
+          const fixOutput = await this.runOrchestratorStage(run, 'fix', iteration, allWorkerResults)
           this.emit(runId, 'orchestrator.fix.completed', { runId, iteration, summary: fixOutput.summary, output: fixOutput })
           continue
         }
 
-        const reportOutput = await this.runOrchestratorStage(run, 'report', iteration, workerResults)
+        const reportOutput = await this.runOrchestratorStage(run, 'report', iteration, allWorkerResults)
+
+        this.emit(runId, 'orchestrator.report.completed', { runId, iteration, summary: reportOutput.summary, output: reportOutput })
+
+        // Only mark the run succeeded when the orchestrator explicitly ends with success.
+        const reportOutcome = reportOutput.report?.outcome
+        const shouldEnd = reportOutput.next.recommendedStage === 'end'
+        const shouldSucceed = reportOutput.status === 'succeeded' && reportOutcome === 'succeeded' && shouldEnd
+
+        if (!shouldSucceed) {
+          this.emit(runId, 'run.warning', {
+            runId,
+            code: 'report_not_terminal_success',
+            reason: 'report stage did not indicate terminal success; continuing iterations',
+            report: {
+              status: reportOutput.status,
+              outcome: reportOutcome,
+              next: reportOutput.next.recommendedStage,
+            },
+          })
+          continue
+        }
 
         // Guard against false positives: if a run requires live preview, do not
         // report success unless the preview reached ready state.
@@ -122,7 +145,6 @@ export class RunEngine {
         }
 
         run = this.repository.updateRunStatus(runId, 'succeeded', null)
-        this.emit(runId, 'orchestrator.report.completed', { runId, iteration, summary: reportOutput.summary, output: reportOutput })
         this.emit(runId, 'run.completed', { runId, status: run.status })
         await this.maybeStopPreview(run)
         await this.maybeCleanupGit(run)
